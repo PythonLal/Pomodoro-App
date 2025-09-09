@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="A Pomodoro Timer App to help you focus and improve productivity.">
+    <title>Pomodoro App</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/png" href="favicon.png?v=1">
+</head>
+
+<body>
+    <div class="container" role="main">
+        <div class="header">
+            <h1>Pomodoro Timer</h1>
+            <div class="header-controls">
+                <button id="dark-mode-toggle" aria-label="Toggle dark mode">🌙</button>
+                <button id="fullscreen-toggle" aria-label="Toggle fullscreen mode">⛶</button>
+            </div>
+        </div>
+
+        <!-- Tab Navigation -->
+        <div class="tab-container">
+            <div class="tab-buttons">
+                <button class="tab-button active" data-tab="standard">Standard Timer</button>
+                <button class="tab-button" data-tab="custom">Custom Timer</button>
+            </div>
+        </div>
+
+        <!-- Standard Timer Tab -->
+        <div id="standard-tab" class="tab-content active">
+            <div class="timer" aria-label="Timer">
+                <span id="minutes">00</span>:<span id="seconds">00</span>.<span id="milliseconds">000</span>
+            </div>
+
+            <div class="alarm-selection">
+                <label for="alarm-type">Alarm Sound:</label>
+                <select id="alarm-type">
+                    <option value="high">High</option>
+                    <option value="low">Low</option>
+                </select>
+            </div>
+
+            <div class="controls" role="toolbar" aria-label="Timer controls">
+                <button id="start" aria-label="Start the timer">Start</button>
+                <button id="pause" aria-label="Pause or resume the timer" disabled>Pause</button>
+                <button id="stop" aria-label="Stop the timer" disabled>Stop</button>
+            </div>
+
+            <div id="message" role="status" aria-live="polite"></div>
+        </div>
+
+        <!-- Custom Timer Tab -->
+        <div id="custom-tab" class="tab-content">
+            <div class="custom-timer-setup">
+                <div class="time-inputs">
+                    <div class="input-group">
+                        <label for="custom-hours">Hours</label>
+                        <input type="number" id="custom-hours" min="0" max="23" value="0">
+                    </div>
+                    <div class="input-group">
+                        <label for="custom-minutes">Minutes</label>
+                        <input type="number" id="custom-minutes" min="0" max="59" value="0">
+                    </div>
+                    <div class="input-group">
+                        <label for="custom-seconds">Seconds</label>
+                        <input type="number" id="custom-seconds" min="0" max="59" value="0">
+                    </div>
+                </div>
+                <div class="preset-buttons">
+                    <button class="preset-btn" data-time="300">5 min</button>
+                    <button class="preset-btn" data-time="600">10 min</button>
+                    <button class="preset-btn" data-time="1500">25 min</button>
+                    <button class="preset-btn" data-time="3000">50 min</button>
+                </div>
+            </div>
+
+            <div class="custom-timer" aria-label="Custom Timer">
+                <span id="custom-timer-minutes">00</span>:<span id="custom-timer-seconds">00</span>
+            </div>
+
+            <div class="custom-controls" role="toolbar" aria-label="Custom timer controls">
+                <button id="custom-start" aria-label="Start the custom timer">Start</button>
+                <button id="custom-pause" aria-label="Pause or resume the custom timer" disabled>Pause</button>
+                <button id="custom-reset" aria-label="Reset the custom timer">Reset</button>
+            </div>
+
+            <div id="custom-message" role="status" aria-live="polite"></div>
+        </div>
+    </div>
+
+    <!-- Fullscreen overlay -->
+    <div id="fullscreen-overlay" class="fullscreen-overlay hidden">
+        <div class="fullscreen-content">
+            <div class="fullscreen-timer">
+                <span id="fs-minutes">00</span>:<span id="fs-seconds">00</span>
+            </div>
+            <div class="fullscreen-status" id="fs-status">Focus Time</div>
+            <button id="exit-fullscreen" aria-label="Exit fullscreen">✕</button>
+        </div>
+    </div>
+
+    <!-- Celebration Animation -->
+    <div id="celebration" class="celebration hidden">
+        <div class="celebration-content">
+            <div class="celebration-icon">🎉</div>
+            <div class="celebration-text">Great Job!</div>
+            <div class="celebration-subtext">Session Completed</div>
+        </div>
+        <div class="confetti"></div>
+    </div>
+
+    <audio id="alarm-sound" src="alarm.mp3" preload="auto" hidden></audio>
+    <audio id="alarm-sound-high" src="alarmhigh.mp3" preload="auto" hidden></audio>
+    <script src="script.js"></script>
+</body>
+
+</html>
