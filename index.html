@@ -6,6 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="A Pomodoro Timer App to help you focus and improve productivity.">
     <title>Pomodoro App</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,400&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,600;0,9..144,700;1,9..144,400&display=swap">
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/png" href="favicon.png?v=1">
 </head>
@@ -15,7 +18,6 @@
         <div class="header">
             <h1>Pomodoro Timer</h1>
             <div class="header-controls">
-                <button id="dark-mode-toggle" aria-label="Toggle dark mode">🌙</button>
                 <button id="fullscreen-toggle" aria-label="Toggle fullscreen mode">⛶</button>
             </div>
         </div>
@@ -30,16 +32,20 @@
 
         <!-- Standard Timer Tab -->
         <div id="standard-tab" class="tab-content active">
-            <div class="timer" aria-label="Timer">
-                <span id="minutes">00</span>:<span id="seconds">00</span>.<span id="milliseconds">000</span>
-            </div>
+                <div class="timer" aria-label="Timer">
+                    <span id="minutes">00</span>:<span id="seconds">00</span>.<span id="milliseconds">000</span>
+                </div>
 
             <div class="alarm-selection">
                 <label for="alarm-type">Alarm Sound:</label>
                 <select id="alarm-type">
+                    <option value="low" selected>Low</option>
                     <option value="high">High</option>
-                    <option value="low">Low</option>
                 </select>
+                <div class="volume-control">
+                    <label for="alarm-volume">🔊</label>
+                    <input type="range" id="alarm-volume" min="0" max="1" step="0.05" value="0.5" aria-label="Alarm volume">
+                </div>
             </div>
 
             <div class="controls" role="toolbar" aria-label="Timer controls">
@@ -47,6 +53,8 @@
                 <button id="pause" aria-label="Pause or resume the timer" disabled>Pause</button>
                 <button id="stop" aria-label="Stop the timer" disabled>Stop</button>
             </div>
+
+            <div class="kb-hint">Space · pause/resume &nbsp;·&nbsp; F · fullscreen</div>
 
             <div id="message" role="status" aria-live="polite"></div>
         </div>
@@ -76,8 +84,27 @@
                 </div>
             </div>
 
-            <div class="custom-timer" aria-label="Custom Timer">
-                <span id="custom-timer-minutes">00</span>:<span id="custom-timer-seconds">00</span>
+            <div class="custom-timer-ring-wrapper">
+                <svg class="progress-ring-svg" viewBox="0 0 260 260">
+                    <circle class="progress-ring-track" cx="130" cy="130" r="120"/>
+                    <circle class="progress-ring-fill" id="custom-ring-fill" cx="130" cy="130" r="120"
+                        stroke-dasharray="753.98" stroke-dashoffset="753.98"/>
+                </svg>
+                <div class="custom-timer" aria-label="Custom Timer">
+                    <span id="custom-timer-minutes">00</span>:<span id="custom-timer-seconds">00</span>
+                </div>
+            </div>
+
+            <div class="custom-alarm-selection">
+                <label for="custom-alarm-type">Alarm Sound:</label>
+                <select id="custom-alarm-type">
+                    <option value="low" selected>Low</option>
+                    <option value="high">High</option>
+                </select>
+                <div class="volume-control">
+                    <label for="custom-alarm-volume">🔊</label>
+                    <input type="range" id="custom-alarm-volume" min="0" max="1" step="0.05" value="0.5" aria-label="Custom alarm volume">
+                </div>
             </div>
 
             <div class="custom-controls" role="toolbar" aria-label="Custom timer controls">
@@ -103,15 +130,40 @@
 
     <!-- Celebration Animation -->
     <div id="celebration" class="celebration hidden">
+        <div class="confetti"></div>
         <div class="celebration-content">
             <div class="celebration-icon">🎉</div>
             <div class="celebration-text">Great Job!</div>
             <div class="celebration-subtext">Session Completed</div>
+            <div class="celebration-dismiss">tap anywhere to continue</div>
         </div>
-        <div class="confetti"></div>
     </div>
 
-    <audio id="alarm-sound" src="alarm.mp3" preload="auto" hidden></audio>
+    <!-- Rest Timer Modal -->
+    <div id="rest-overlay" class="rest-overlay hidden">
+        <div class="rest-modal">
+            <div class="rest-header">
+                <span class="rest-emoji">☕</span>
+                <h2 class="rest-title">Break Time</h2>
+                <p class="rest-subtitle" id="rest-subtitle">You earned it</p>
+            </div>
+            <div class="rest-ring-wrapper">
+                <svg class="rest-ring-svg" viewBox="0 0 200 200">
+                    <circle class="rest-ring-track" cx="100" cy="100" r="88"/>
+                    <circle class="rest-ring-fill" id="rest-ring-fill" cx="100" cy="100" r="88"
+                        stroke-dasharray="553.0" stroke-dashoffset="0"/>
+                </svg>
+                <div class="rest-countdown">
+                    <span id="rest-minutes">00</span>:<span id="rest-seconds">00</span>
+                </div>
+            </div>
+            <div class="rest-actions">
+                <button id="rest-skip-btn" class="rest-skip-btn">Skip Break</button>
+            </div>
+        </div>
+    </div>
+
+
     <audio id="alarm-sound-high" src="alarmhigh.mp3" preload="auto" hidden></audio>
     <script src="script.js"></script>
 </body>

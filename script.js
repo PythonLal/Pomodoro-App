@@ -39,7 +39,6 @@ const presetButtons = document.querySelectorAll(".preset-btn");
 
 // DOM Elements - Common
 const alarmSound = document.getElementById("alarm-sound");
-const darkModeToggle = document.getElementById("dark-mode-toggle");
 const fullscreenToggle = document.getElementById("fullscreen-toggle");
 const tabButtons = document.querySelectorAll(".tab-button");
 const tabContents = document.querySelectorAll(".tab-content");
@@ -55,6 +54,11 @@ const celebration = document.getElementById("celebration");
 // DOM Elements - Alarm
 const alarmSoundHigh = document.getElementById("alarm-sound-high");
 const alarmTypeSelect = document.getElementById("alarm-type");
+const alarmVolumeSlider = document.getElementById("alarm-volume");
+
+// DOM Elements - Custom Alarm
+const customAlarmTypeSelect = document.getElementById("custom-alarm-type");
+const customAlarmVolumeSlider = document.getElementById("custom-alarm-volume");
 
 // Initialize App
 document.addEventListener('DOMContentLoaded', function () {
@@ -64,7 +68,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
 function initializeApp() {
     loadSavedState();
-    loadSavedDarkMode();
+    loadSavedVolume();
     setupEventListeners();
     updateCustomTimerDisplay();
     updateCustomTimerControlsState();
@@ -99,14 +103,17 @@ function loadSavedState() {
     localStorage.removeItem("pomodoroState");
 }
 
-// Apply Saved Dark Mode
-function loadSavedDarkMode() {
-    const savedDarkMode = localStorage.getItem("darkMode");
-    if (savedDarkMode === "enabled") {
-        document.body.classList.add("dark-mode");
-        darkModeToggle.textContent = "☀️";
-    } else {
-        darkModeToggle.textContent = "🌙";
+function loadSavedVolume() {
+    const savedVolume = localStorage.getItem("alarmVolume");
+    const volume = savedVolume !== null ? parseFloat(savedVolume) : 0.5;
+    alarmVolumeSlider.value = volume;
+    applyVolume(volume);
+
+    const savedCustomVolume = localStorage.getItem("customAlarmVolume");
+    const customVolume = savedCustomVolume !== null ? parseFloat(savedCustomVolume) : 0.5;
+    if (customAlarmVolumeSlider) {
+        customAlarmVolumeSlider.value = customVolume;
+        applyCustomVolume(customVolume);
     }
 }
 
@@ -116,9 +123,6 @@ function setupEventListeners() {
     tabButtons.forEach(button => {
         button.addEventListener('click', () => switchTab(button.dataset.tab));
     });
-
-    // Dark mode toggle
-    darkModeToggle.addEventListener("click", toggleDarkMode);
 
     // Fullscreen toggle
     fullscreenToggle.addEventListener("click", toggleFullscreen);
@@ -146,47 +150,50 @@ function setupEventListeners() {
 
     // Keyboard shortcuts
     document.addEventListener('keydown', handleKeyboardShortcuts);
+
+    // Volume slider
+    alarmVolumeSlider.addEventListener('input', () => {
+        const volume = parseFloat(alarmVolumeSlider.value);
+        applyVolume(volume);
+        localStorage.setItem("alarmVolume", volume);
+    });
+
+    // Custom volume slider
+    if (customAlarmVolumeSlider) {
+        customAlarmVolumeSlider.addEventListener('input', () => {
+            const volume = parseFloat(customAlarmVolumeSlider.value);
+            applyCustomVolume(volume);
+            localStorage.setItem("customAlarmVolume", volume);
+        });
+    }
 }
 
 // Tab Switching
 function switchTab(tabName) {
-    // Check if any timer is running and apply visual feedback
-    const isStandardRunning = timer && !isPaused;
-    const isCustomRunning = customIsRunning && !customIsPaused;
+    // Block only when actively running (not paused)
+    const isStandardActivelyRunning = timer !== null && !isPaused;
+    const isCustomActivelyRunning = customIsRunning && !customIsPaused;
 
-    // Update button states first
-    tabButtons.forEach(button => {
-        button.classList.remove('disabled');
-        if (isStandardRunning || isCustomRunning) {
-            if (button.dataset.tab !== document.querySelector('.tab-button.active').dataset.tab) {
-                button.classList.add('disabled');
-            }
-        }
-    });
-
-    // Prevent tab switching if standard timer is running
-    if (timer && !isPaused) {
-        messageDiv.textContent = "Cannot switch tabs while standard timer is running.";
+    if (isStandardActivelyRunning) {
+        messageDiv.textContent = "Pause the timer before switching tabs.";
         setTimeout(() => {
-            if (messageDiv.textContent === "Cannot switch tabs while standard timer is running.") {
+            if (messageDiv.textContent === "Pause the timer before switching tabs.") {
                 messageDiv.textContent = "Timer running...";
             }
         }, 2000);
         return;
     }
 
-    // Prevent tab switching if custom timer is running
-    if (customIsRunning && !customIsPaused) {
-        customMessageDiv.textContent = "Cannot switch tabs while custom timer is running.";
+    if (isCustomActivelyRunning) {
+        customMessageDiv.textContent = "Pause the timer before switching tabs.";
         setTimeout(() => {
-            if (customMessageDiv.textContent === "Cannot switch tabs while custom timer is running.") {
+            if (customMessageDiv.textContent === "Pause the timer before switching tabs.") {
                 customMessageDiv.textContent = "Custom timer running...";
             }
         }, 2000);
         return;
     }
 
-    // Clear disabled states when switching is allowed
     tabButtons.forEach(button => {
         button.classList.remove('disabled');
         button.classList.toggle('active', button.dataset.tab === tabName);
@@ -198,12 +205,12 @@ function switchTab(tabName) {
 }
 
 function updateTabStates() {
-    const isStandardRunning = timer !== null;
-    const isCustomRunning = customIsRunning;
+    const isStandardActivelyRunning = timer !== null && !isPaused;
+    const isCustomActivelyRunning = customIsRunning && !customIsPaused;
 
     tabButtons.forEach(button => {
         button.classList.remove('disabled');
-        if (isStandardRunning || isCustomRunning) {
+        if (isStandardActivelyRunning || isCustomActivelyRunning) {
             if (button.dataset.tab !== document.querySelector('.tab-button.active').dataset.tab) {
                 button.classList.add('disabled');
             }
@@ -237,12 +244,33 @@ function updateCustomTimerControlsState() {
     });
 }
 
-// Dark Mode Toggle
-function toggleDarkMode() {
-    document.body.classList.toggle("dark-mode");
-    const darkModeEnabled = document.body.classList.contains("dark-mode");
-    darkModeToggle.textContent = darkModeEnabled ? "☀️" : "🌙";
-    localStorage.setItem("darkMode", darkModeEnabled ? "enabled" : "disabled");
+// Apply volume to both alarm sounds
+function applyVolume(volume) {
+    if (alarmSound) alarmSound.volume = volume;
+    if (alarmSoundHigh) alarmSoundHigh.volume = volume;
+    // Update slider track fill
+    alarmVolumeSlider.style.setProperty('--volume-pct', (volume * 100) + '%');
+    // Update icon based on level
+    const label = document.querySelector('label[for="alarm-volume"]');
+    if (label) {
+        if (volume === 0) label.textContent = '🔇';
+        else if (volume < 0.4) label.textContent = '🔈';
+        else if (volume < 0.75) label.textContent = '🔉';
+        else label.textContent = '🔊';
+    }
+}
+
+function applyCustomVolume(volume) {
+    if (customAlarmVolumeSlider) {
+        customAlarmVolumeSlider.style.setProperty('--volume-pct', (volume * 100) + '%');
+    }
+    const label = document.querySelector('label[for="custom-alarm-volume"]');
+    if (label) {
+        if (volume === 0) label.textContent = '🔇';
+        else if (volume < 0.4) label.textContent = '🔈';
+        else if (volume < 0.75) label.textContent = '🔉';
+        else label.textContent = '🔊';
+    }
 }
 
 // Fullscreen Mode
@@ -287,9 +315,26 @@ function updateFullscreenDisplay() {
 function handleKeyboardShortcuts(e) {
     if (e.target.tagName === 'INPUT') return;
 
+    // Allow Escape to skip rest modal
+    if (e.key === 'Escape') {
+        if (!restOverlay.classList.contains('hidden')) {
+            endRestTimer(false);
+            return;
+        }
+        if (!fullscreenOverlay.classList.contains('hidden')) {
+            exitFullscreen();
+            return;
+        }
+    }
+
     switch (e.key.toLowerCase()) {
         case ' ':
             e.preventDefault();
+            // Space skips rest modal if open
+            if (!restOverlay.classList.contains('hidden')) {
+                endRestTimer(false);
+                return;
+            }
             const activeTab = document.querySelector('.tab-button.active').dataset.tab;
             if (activeTab === 'custom') {
                 if (!customIsRunning) {
@@ -298,16 +343,11 @@ function handleKeyboardShortcuts(e) {
                     pauseOrResumeCustomTimer();
                 }
             } else {
-                if (!timer) {
+                if (!timer && !isPaused) {
                     startTimer();
                 } else {
                     pauseOrResumeTimer();
                 }
-            }
-            break;
-        case 'escape':
-            if (!fullscreenOverlay.classList.contains('hidden')) {
-                exitFullscreen();
             }
             break;
         case 'f':
@@ -322,13 +362,10 @@ function handleKeyboardShortcuts(e) {
 
 // Standard Timer Functions
 function startTimer() {
-    if (isPaused) {
-        startTime = performance.now() - elapsedMilliseconds;
-        isPaused = false;
-    } else {
-        startTime = performance.now();
-        elapsedMilliseconds = 0;
-    }
+    // Always a fresh start — resume is handled by pauseOrResumeTimer
+    startTime = performance.now();
+    elapsedMilliseconds = 0;
+    isPaused = false;
 
     startButton.disabled = true;
     pauseButton.disabled = false;
@@ -341,14 +378,12 @@ function startTimer() {
 }
 
 function updateTimer() {
-    if (!isPaused) {
-        const currentTime = performance.now();
-        elapsedMilliseconds = currentTime - startTime;
-        updateTimerDisplay();
-        updateFullscreenDisplay();
-        saveState();
-        timer = requestAnimationFrame(updateTimer);
-    }
+    if (isPaused) return;
+    const currentTime = performance.now();
+    elapsedMilliseconds = currentTime - startTime;
+    updateTimerDisplay();
+    updateFullscreenDisplay();
+    timer = requestAnimationFrame(updateTimer);
 }
 
 function pauseOrResumeTimer() {
@@ -356,16 +391,7 @@ function pauseOrResumeTimer() {
         isPaused = false;
         pauseButton.textContent = "Pause";
         clearInterval(pauseTimer);
-
-        if (pausedMilliseconds > 0) {
-            const deduct = confirm(`You paused for ${Math.floor(pausedMilliseconds / 1000)} seconds. Deduct this time from your work session?`);
-            if (deduct) {
-                elapsedMilliseconds -= pausedMilliseconds;
-                if (elapsedMilliseconds < 0) elapsedMilliseconds = 0;
-            }
-            pausedMilliseconds = 0;
-        }
-
+        pausedMilliseconds = 0;
         startTime = performance.now() - elapsedMilliseconds;
         timer = requestAnimationFrame(updateTimer);
         messageDiv.textContent = "Timer resumed...";
@@ -374,12 +400,12 @@ function pauseOrResumeTimer() {
     } else {
         isPaused = true;
         cancelAnimationFrame(timer);
+        timer = null;
         pauseButton.textContent = "Resume";
         startPauseTimer();
         updateTabStates();
         updateCustomTimerControlsState();
     }
-    updateCustomTimerControlsState();
 }
 
 function stopTimer() {
@@ -402,10 +428,19 @@ function stopTimer() {
         selectedAlarm.play().catch(e => console.log('Could not play alarm sound'));
     }
 
-    messageDiv.textContent = `You worked for ${workMinutes} minutes. Rest needed: ${restNeeded} seconds.`;
-    if (confirm(`Start ${restNeeded} seconds of rest?`)) startRestTimer(restNeeded);
     timer = null;
     resetTimer();
+
+    if (restNeeded > 0) {
+        showRestPrompt(restNeeded, workMinutes);
+    } else {
+        messageDiv.textContent = `You worked for ${workMinutes} minutes. Keep it up!`;
+    }
+}
+
+function showRestPrompt(restSeconds, workMinutes) {
+    // Skip the old inline prompt entirely — go straight to the modal
+    showRestModal(restSeconds, workMinutes);
 }
 
 function startPauseTimer() {
@@ -420,6 +455,7 @@ function resetTimer() {
     pausedMilliseconds = 0;
     isPaused = false;
     cancelAnimationFrame(timer);
+    timer = null;
     clearInterval(pauseTimer);
     pauseButton.textContent = "Pause";
     startButton.disabled = false;
@@ -429,7 +465,7 @@ function resetTimer() {
     saveState(true);
     updateTabStates();
     updateCustomTimerControlsState();
-    messageDiv.textContent = "";
+    // Don't clear messageDiv here — the caller sets it right after
 }
 
 function updateTimerDisplay() {
@@ -457,9 +493,14 @@ function setPresetTime(seconds) {
 }
 
 function updateCustomTimerFromInputs() {
-    const hours = parseInt(customHoursInput.value) || 0;
-    const minutes = parseInt(customMinutesInput.value) || 0;
-    const seconds = parseInt(customSecondsInput.value) || 0;
+    let hours   = Math.max(0, Math.min(23, parseInt(customHoursInput.value)   || 0));
+    let minutes = Math.max(0, Math.min(59, parseInt(customMinutesInput.value) || 0));
+    let seconds = Math.max(0, Math.min(59, parseInt(customSecondsInput.value) || 0));
+
+    // Write clamped values back so the field reflects reality
+    customHoursInput.value   = hours;
+    customMinutesInput.value = minutes;
+    customSecondsInput.value = seconds;
 
     customTotalTime = (hours * 3600 + minutes * 60 + seconds) * 1000;
     customElapsedTime = 0;
@@ -473,11 +514,13 @@ function startCustomTimer() {
     }
 
     if (customIsPaused) {
+        // Resume from where we left off
         customStartTime = performance.now() - customElapsedTime;
         customIsPaused = false;
     } else {
-        customStartTime = performance.now();
+        // Fresh start — reset elapsed so full duration runs
         customElapsedTime = 0;
+        customStartTime = performance.now();
     }
 
     customIsRunning = true;
@@ -485,6 +528,7 @@ function startCustomTimer() {
     customPauseButton.disabled = false;
     customMessageDiv.textContent = "Custom timer running...";
 
+    cancelAnimationFrame(customTimer); // cancel any stale rAF before starting
     customTimer = requestAnimationFrame(updateCustomTimer);
     updateTabStates();
     updateCustomTimerControlsState();
@@ -525,29 +569,22 @@ function pauseOrResumeCustomTimer() {
         updateTabStates();
         updateCustomTimerControlsState();
     }
-    updateCustomTimerControlsState();
-}
-
-function stopCustomTimer() {
-    const elapsedSeconds = Math.floor(customElapsedTime / 1000);
-    const elapsedMinutes = Math.floor(elapsedSeconds / 60);
-
-    showCelebration();
-    showNotification("Custom Timer Stopped!", `You worked for ${elapsedMinutes} minutes and ${elapsedSeconds % 60} seconds.`);
-
-    customMessageDiv.textContent = `Timer stopped. You worked for ${elapsedMinutes}:${(elapsedSeconds % 60).toString().padStart(2, '0')}.`;
-    resetCustomTimer();
 }
 
 function completeCustomTimer() {
     const totalMinutes = Math.floor(customTotalTime / 60000);
 
     cancelAnimationFrame(customTimer);
+    customTimer = null;
     customIsRunning = false;
 
-    // Play alarm sound
-    if (alarmSound) {
-        alarmSound.play().catch(e => console.log('Could not play alarm sound'));
+    // Play alarm sound using custom tab's alarm settings
+    const customVolume = customAlarmVolumeSlider ? parseFloat(customAlarmVolumeSlider.value) : 0.5;
+    const useHighAlarm = customAlarmTypeSelect && customAlarmTypeSelect.value === 'high';
+    const selectedAlarm = useHighAlarm ? alarmSoundHigh : alarmSound;
+    if (selectedAlarm) {
+        selectedAlarm.volume = customVolume;
+        selectedAlarm.play().catch(e => console.log('Could not play alarm sound'));
     }
     showCelebration();
     showNotification("Custom Timer Complete!", `Great job! You completed your ${totalMinutes} minute session.`);
@@ -558,12 +595,14 @@ function completeCustomTimer() {
 
 function resetCustomTimer() {
     cancelAnimationFrame(customTimer);
+    customTimer = null;
     customElapsedTime = 0;
     customIsPaused = false;
     customIsRunning = false;
     customStartButton.disabled = false;
     customPauseButton.disabled = true;
     customPauseButton.textContent = "Pause";
+    // Restore total time display so it shows the set duration, not 00:00
     updateCustomTimerDisplay();
 
     if (!customMessageDiv.textContent.includes("completed") && !customMessageDiv.textContent.includes("stopped")) {
@@ -589,42 +628,111 @@ function calculateRestTime(workSeconds) {
     return Math.floor(workSeconds * 0.2);
 }
 
-function startRestTimer(restSeconds) {
-    let remainingTime = restSeconds;
-    fsStatus.textContent = 'Rest Time';
+// ── Rest Timer Modal ──────────────────────────────────────
+const restOverlay    = document.getElementById('rest-overlay');
+const restRingFill   = document.getElementById('rest-ring-fill');
+const restMinutesEl  = document.getElementById('rest-minutes');
+const restSecondsEl  = document.getElementById('rest-seconds');
+const restSkipBtn    = document.getElementById('rest-skip-btn');
+const restSubtitle   = document.getElementById('rest-subtitle');
+const REST_CIRCUMFERENCE = 553.0; // 2 * π * 88
 
-    const restInterval = setInterval(() => {
-        if (remainingTime <= 0) {
-            clearInterval(restInterval);
-            // Play appropriate alarm sound for rest timer
-            const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : alarmSound;
-            if (selectedAlarm) {
-                selectedAlarm.play().catch(e => console.log('Could not play alarm sound'));
-            }
-            showNotification("Rest Complete!", "Time to get back to work!");
-            messageDiv.textContent = "Rest is over! Get back to work.";
-            fsStatus.textContent = 'Focus Time';
-            timer = null;
-        } else {
-            messageDiv.textContent = `Resting... ${remainingTime--} seconds remaining.`;
-            updateFullscreenRestDisplay(remainingTime + 1);
-        }
-    }, 1000);
+let restRaf = null;
+let restStartTime = null;
+let restTotalMs = 0;
+
+function showRestModal(restSeconds, workMinutes) {
+    restTotalMs = restSeconds * 1000;
+    const restMins = Math.floor(restSeconds / 60);
+    const restSecs = restSeconds % 60;
+    const label = restMins > 0
+        ? `${restMins}m ${restSecs > 0 ? restSecs + 's' : ''}`.trim()
+        : `${restSecs}s`;
+
+    if (restSubtitle) restSubtitle.textContent = `${workMinutes} min session · ${label} break`;
+    messageDiv.textContent = '';
+
+    // Reset ring to full
+    if (restRingFill) {
+        restRingFill.style.transition = 'none';
+        restRingFill.style.strokeDashoffset = '0';
+    }
+
+    restOverlay.classList.remove('hidden');
+    restStartTime = performance.now();
+    restRaf = requestAnimationFrame(tickRestTimer);
 }
 
-function updateFullscreenRestDisplay(seconds) {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
+function tickRestTimer(now) {
+    const elapsed = now - restStartTime;
+    const remaining = Math.max(0, restTotalMs - elapsed);
+    const progress = remaining / restTotalMs; // 1 = full ring, 0 = empty
 
-    fsMinutes.textContent = minutes.toString().padStart(2, "0");
-    fsSeconds.textContent = remainingSeconds.toString().padStart(2, "0");
+    // Update ring
+    if (restRingFill) {
+        restRingFill.style.transition = 'none';
+        restRingFill.style.strokeDashoffset = REST_CIRCUMFERENCE * (1 - progress);
+    }
+
+    // Update countdown
+    const totalSecs = Math.ceil(remaining / 1000);
+    const m = Math.floor(totalSecs / 60);
+    const s = totalSecs % 60;
+    if (restMinutesEl) restMinutesEl.textContent = m.toString().padStart(2, '0');
+    if (restSecondsEl) restSecondsEl.textContent = s.toString().padStart(2, '0');
+
+    if (remaining <= 0) {
+        endRestTimer(true);
+        return;
+    }
+
+    restRaf = requestAnimationFrame(tickRestTimer);
+}
+
+function endRestTimer(completed) {
+    cancelAnimationFrame(restRaf);
+    restRaf = null;
+    restOverlay.classList.add('hidden');
+
+    if (completed) {
+        const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : alarmSound;
+        if (selectedAlarm) selectedAlarm.play().catch(() => {});
+        showNotification("Break Over!", "Time to get back to focus.");
+        messageDiv.textContent = "Break complete — let's get back to it! 💪";
+    } else {
+        messageDiv.textContent = "Break skipped — back to work!";
+    }
+    fsStatus.textContent = 'Focus Time';
+}
+
+if (restSkipBtn) {
+    restSkipBtn.addEventListener('click', () => endRestTimer(false));
+}
+
+function startRestTimer(restSeconds) {
+    // Legacy entry point — now delegates to modal
+    showRestModal(restSeconds, 0);
 }
 
 // Celebration Animation
 function showCelebration() {
     celebration.classList.remove('hidden');
 
-    // Auto-hide after 3 seconds
+    // Create shockwave rings
+    const confettiContainer = document.querySelector('.confetti');
+    confettiContainer.innerHTML = '';
+
+    for (let i = 0; i < 3; i++) {
+        const ring = document.createElement('div');
+        ring.className = 'shockwave';
+        ring.style.animationDelay = (i * 0.2) + 's';
+        confettiContainer.appendChild(ring);
+    }
+
+    // Create confetti particles
+    createConfetti();
+
+    // Auto-hide after 5 seconds
     setTimeout(() => {
         celebration.classList.add('hidden');
     }, 5000);
@@ -633,28 +741,37 @@ function showCelebration() {
     celebration.addEventListener('click', () => {
         celebration.classList.add('hidden');
     }, { once: true });
-
-    // Create additional confetti elements
-    createConfetti();
 }
 
 function createConfetti() {
-    const colors = ['#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#ffeaa7', '#dda0dd', '#98d8c8'];
+    const colors = ['#f0a04b', '#c77dff', '#ff6b6b', '#4ecdc4', '#ffd700', '#ff9ff3', '#54a0ff'];
+    const shapes = ['circle', 'square', 'triangle'];
     const confettiContainer = document.querySelector('.confetti');
 
-    // Clear existing confetti
-    confettiContainer.innerHTML = '';
+    for (let i = 0; i < 80; i++) {
+        const piece = document.createElement('div');
+        const color = colors[Math.floor(Math.random() * colors.length)];
+        const size = Math.random() * 10 + 5;
+        const startX = Math.random() * 100;
+        const duration = Math.random() * 2.5 + 2;
+        const delay = Math.random() * 1.5;
+        const shape = shapes[Math.floor(Math.random() * shapes.length)];
 
-    for (let i = 0; i < 50; i++) {
-        const confettiPiece = document.createElement('div');
-        confettiPiece.style.position = 'absolute';
-        confettiPiece.style.width = '10px';
-        confettiPiece.style.height = '10px';
-        confettiPiece.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)];
-        confettiPiece.style.left = Math.random() * 100 + '%';
-        confettiPiece.style.animationDelay = Math.random() * 3 + 's';
-        confettiPiece.style.animation = 'confetti-fall 3s linear infinite';
-        confettiContainer.appendChild(confettiPiece);
+        piece.style.cssText = `
+            position: absolute;
+            top: -20px;
+            left: ${startX}%;
+            width: ${size}px;
+            height: ${size}px;
+            background: ${shape === 'triangle' ? 'transparent' : color};
+            border-radius: ${shape === 'circle' ? '50%' : shape === 'square' ? '2px' : '0'};
+            border-left: ${shape === 'triangle' ? size/2 + 'px solid transparent' : 'none'};
+            border-right: ${shape === 'triangle' ? size/2 + 'px solid transparent' : 'none'};
+            border-bottom: ${shape === 'triangle' ? size + 'px solid ' + color : 'none'};
+            animation: confetti-spiral ${duration}s ease-in ${delay}s forwards;
+            opacity: 1;
+        `;
+        confettiContainer.appendChild(piece);
     }
 }
 
@@ -694,3 +811,205 @@ document.addEventListener('visibilitychange', function () {
 window.addEventListener('beforeunload', function () {
     saveState();
 });
+// ═══════════════════════════════════════════════════════
+// ── FEATURE MODULE: Visual Enhancements ─────────────────
+// ═══════════════════════════════════════════════════════
+
+// ── 1. CIRCULAR PROGRESS RING (Custom Timer only) ────────
+const customRingFill = document.getElementById('custom-ring-fill');
+const RING_CIRCUMFERENCE = 753.98; // 2 * π * 120
+
+// Custom timer ring: drains as time is consumed
+function updateCustomRing() {
+    if (!customRingFill || customTotalTime === 0) return;
+    const remaining = Math.max(0, customTotalTime - customElapsedTime);
+    const progress = remaining / customTotalTime; // 1 = full, 0 = empty
+    const offset = RING_CIRCUMFERENCE * (1 - progress);
+    customRingFill.style.strokeDashoffset = offset;
+
+    // Color shift: green → amber → red as it drains
+    let r, g, b;
+    if (progress > 0.5) {
+        // green → amber
+        const t = 1 - (progress - 0.5) * 2;
+        r = Math.round(100 + 140 * t);
+        g = Math.round(200 - 40 * t);
+        b = Math.round(80 - 40 * t);
+    } else {
+        // amber → red
+        const t = 1 - progress * 2;
+        r = 240;
+        g = Math.round(160 - 130 * t);
+        b = Math.round(40 - 30 * t);
+    }
+    customRingFill.style.stroke = `rgb(${r},${g},${b})`;
+    customRingFill.style.filter = `drop-shadow(0 0 8px rgba(${r},${g},${b},0.45))`;
+}
+
+// ── 2. HEARTBEAT PULSE ───────────────────────────────────
+const timerDisplay = document.querySelector('.timer');
+const customTimerDisplay = document.querySelector('.custom-timer');
+let lastHeartbeatSecond = -1;
+let lastCustomHeartbeatSecond = -1;
+
+function triggerHeartbeat(el) {
+    if (!el) return;
+    el.classList.remove('pulse');
+    // Force reflow to restart animation
+    void el.offsetWidth;
+    el.classList.add('pulse');
+}
+
+// ── 3. DYNAMIC BACKGROUND GRADIENT ───────────────────────
+// Smoothly interpolates body background between:
+//   cool deep blue-black (start) → warm amber-black (working hard)
+const BG_START = { r: 8, g: 10, b: 18 };   // cool dark blue
+const BG_MID   = { r: 10, g: 9, b: 10 };   // neutral dark
+const BG_END   = { r: 20, g: 10, b: 4 };   // warm ember (the --bg-pure value)
+
+function lerpColor(a, b, t) {
+    return {
+        r: Math.round(a.r + (b.r - a.r) * t),
+        g: Math.round(a.g + (b.g - a.g) * t),
+        b: Math.round(a.b + (b.b - a.b) * t),
+    };
+}
+
+function updateDynamicBackground(progressRatio) {
+    // 0 = just started (cool blue tinge), 1 = deep into session (warm amber)
+    const t = Math.min(Math.max(progressRatio, 0), 1);
+    const col = t < 0.5 ? lerpColor(BG_START, BG_MID, t * 2) : lerpColor(BG_MID, BG_END, (t - 0.5) * 2);
+    document.body.style.backgroundColor = `rgb(${col.r},${col.g},${col.b})`;
+}
+
+function resetDynamicBackground() {
+    document.body.style.backgroundColor = '';
+}
+
+// ── 4. SCREEN EDGE GLOW ──────────────────────────────────
+// Intensity increases as custom timer drains OR std timer grows
+function updateEdgeGlow(progressRatio) {
+    // progressRatio: 0 = beginning, 1 = end/urgency
+    const intensity = Math.min(progressRatio, 1);
+
+    // Color: teal at start → amber mid → red at end
+    let r, g, b;
+    if (intensity < 0.5) {
+        const t = intensity * 2;
+        r = Math.round(50 + 190 * t);
+        g = Math.round(200 - 60 * t);
+        b = Math.round(180 - 100 * t);
+    } else {
+        const t = (intensity - 0.5) * 2;
+        r = 240;
+        g = Math.round(140 - 110 * t);
+        b = Math.round(80 - 60 * t);
+    }
+
+    const alpha = 0.12 + intensity * 0.38;
+    const spread = 20 + intensity * 60;
+    const glow = `rgba(${r},${g},${b},${alpha})`;
+
+    document.body.style.boxShadow = `inset 0 0 ${spread}px ${Math.round(spread * 0.4)}px ${glow}`;
+}
+
+function resetEdgeGlow() {
+    document.body.style.boxShadow = '';
+}
+
+
+// ─────────────────────────────────────────────────────────
+// HOOK INTO EXISTING TIMER FUNCTIONS
+// ─────────────────────────────────────────────────────────
+
+const STD_RING_MAX_MS = 3600000; // 1 hour reference for background/glow
+
+// Intercept standard timer update
+const _origUpdateTimerDisplay = updateTimerDisplay;
+window.updateTimerDisplay = function() {
+    _origUpdateTimerDisplay();
+
+    // Heartbeat: trigger on each new second
+    const currentSecond = Math.floor(elapsedMilliseconds / 1000);
+    if (currentSecond !== lastHeartbeatSecond && timer) {
+        lastHeartbeatSecond = currentSecond;
+        triggerHeartbeat(timerDisplay);
+    }
+
+    // Background & Edge Glow (for standard count-up, we use 60-min as reference)
+    if (timer && !isPaused) {
+        const progress = Math.min(elapsedMilliseconds / STD_RING_MAX_MS, 1);
+        updateDynamicBackground(progress * 0.6);
+        updateEdgeGlow(progress);
+    }
+};
+
+// Intercept custom timer update
+const _origUpdateCustomTimerDisplay = updateCustomTimerDisplay;
+window.updateCustomTimerDisplay = function() {
+    _origUpdateCustomTimerDisplay();
+
+    if (customTotalTime > 0) {
+        const remaining = Math.max(0, customTotalTime - customElapsedTime);
+        const elapsed = customTotalTime - remaining;
+        const progress = elapsed / customTotalTime; // 0→1 as time is consumed
+
+        // Heartbeat on each new second
+        const currentSecond = Math.floor(elapsed / 1000);
+        if (currentSecond !== lastCustomHeartbeatSecond && customIsRunning && !customIsPaused) {
+            lastCustomHeartbeatSecond = currentSecond;
+            triggerHeartbeat(customTimerDisplay);
+        }
+
+        updateCustomRing();
+
+        if (customIsRunning && !customIsPaused) {
+            updateDynamicBackground(progress);
+            updateEdgeGlow(progress);
+        }
+    }
+};
+
+// Hook into pause/resume — reset glow/background while paused
+const _origPauseOrResumeTimer = pauseOrResumeTimer;
+window.pauseOrResumeTimer = function() {
+    _origPauseOrResumeTimer();
+    if (isPaused) {
+        resetEdgeGlow();
+        resetDynamicBackground();
+    }
+};
+
+const _origPauseOrResumeCustomTimer = pauseOrResumeCustomTimer;
+window.pauseOrResumeCustomTimer = function() {
+    _origPauseOrResumeCustomTimer();
+    if (customIsPaused) {
+        resetEdgeGlow();
+        resetDynamicBackground();
+    }
+};
+
+// Reset visuals on stop/reset
+const _origResetTimer = resetTimer;
+window.resetTimer = function() {
+    _origResetTimer();
+    resetEdgeGlow();
+    resetDynamicBackground();
+    lastHeartbeatSecond = -1;
+};
+
+const _origResetCustomTimer = resetCustomTimer;
+window.resetCustomTimer = function() {
+    _origResetCustomTimer();
+    resetEdgeGlow();
+    resetDynamicBackground();
+    if (customRingFill) {
+        customRingFill.style.transition = 'none';
+        customRingFill.style.strokeDashoffset = RING_CIRCUMFERENCE;
+        // Re-enable transition after a frame so future updates animate
+        requestAnimationFrame(() => {
+            customRingFill.style.transition = '';
+        });
+    }
+    lastCustomHeartbeatSecond = -1;
+};
