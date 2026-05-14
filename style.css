@@ -52,7 +52,11 @@ body {
     min-height: 100vh;
     padding: 20px;
     -webkit-font-smoothing: antialiased;
-    transition: background 2s ease, box-shadow 2s ease;
+    /* Removed: transition: background 2s ease, box-shadow 2s ease;
+       Animating background-color and box-shadow on <body> forces a full-page
+       repaint on every frame on Android — the primary cause of the timer freeze.
+       JS now updates these at most once per second instead of 60fps. */
+    will-change: background-color;
 }
 
 .container {

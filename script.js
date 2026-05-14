@@ -7,8 +7,6 @@ let pausedMilliseconds = 0;
 let isPaused = false;
 let completedSessions = 0;
 let sessionData = JSON.parse(localStorage.getItem("sessionData")) || [];
-// Android ghost-click guard: set true by resetTimer(), consumed by startTimer()
-let _ignoreNextStart = false;
 
 // Global Variables for Custom Timer
 let customStartTime = null;
@@ -489,9 +487,6 @@ function handleKeyboardShortcuts(e) {
 
 // Standard Timer Functions
 function startTimer() {
-    // Consume ghost-click guard set by resetTimer() to absorb Android's synthetic
-    // click that fires after the celebration overlay disappears.
-    if (_ignoreNextStart) { _ignoreNextStart = false; return; }
     // Always a fresh start — resume is handled by pauseOrResumeTimer
     startTime = performance.now();
     elapsedMilliseconds = 0;
@@ -510,10 +505,9 @@ function startTimer() {
 const STD_RING_MAX_MS = 3600000; // 1 hour reference for background/glow
 
 function updateTimer() {
-    // Guard: bail if timer was cancelled, we're paused, or startTime was cleared by reset.
-    // The startTime === null check catches Android's case where a stale rAF callback
-    // fires in the same frame as cancelAnimationFrame (timer handle is already null).
-    if (timer === null || isPaused || startTime === null) return;
+    // Guard: if timer was cleared (stop/reset), do not reschedule
+    if (!timer && !isPaused) return;
+    if (isPaused) return;
     const currentTime = performance.now();
     elapsedMilliseconds = currentTime - startTime;
     updateTimerDisplay();
@@ -620,7 +614,6 @@ function resetTimer() {
     isPaused = false;
     cancelAnimationFrame(timer);
     timer = null;
-    startTime = null;          // FIX: null so stale rAF frames can't miscalculate elapsed time
     clearInterval(pauseTimer);
     pauseButton.textContent = "Pause";
     startButton.disabled = false;
@@ -635,11 +628,11 @@ function resetTimer() {
     resetEdgeGlow();
     resetDynamicBackground();
     lastHeartbeatSecond = -1;
-    // Block ghost clicks on Android: after stop, Android synthesizes 1-2 delayed
-    // click events that can land on the Start button once the celebration disappears.
-    // A time-based pointer-events patch is unreliable (can expire too early or too late).
-    // Instead we use a flag that startTimer() consumes on the first ghost invocation.
-    _ignoreNextStart = true;
+    // Block ghost clicks on Android: after a stop, Android synthesizes a delayed
+    // click that passes through the celebration overlay onto the Start button.
+    // Briefly disabling pointer-events absorbs it without affecting UX.
+    startButton.style.pointerEvents = 'none';
+    setTimeout(() => { startButton.style.pointerEvents = ''; }, 600);
     // Don't clear messageDiv here — the caller sets it right after
 }
 
@@ -926,11 +919,6 @@ function startRestTimer(restSeconds) {
 }
 
 // Celebration Animation
-// Named handler so it can be removed and never stacks across sessions
-function _dismissCelebration() {
-    celebration.classList.add('hidden');
-}
-
 function showCelebration() {
     celebration.classList.remove('hidden');
 
@@ -948,16 +936,20 @@ function showCelebration() {
     // Create confetti particles
     createConfetti();
 
-    // Auto-hide after 5 seconds — remove listener so it doesn't stack
-    clearTimeout(showCelebration._autoHideTimer);
-    showCelebration._autoHideTimer = setTimeout(() => {
+    // Auto-hide after 5 seconds
+    setTimeout(() => {
         celebration.classList.add('hidden');
-        celebration.removeEventListener('click', _dismissCelebration);
     }, 5000);
 
-    // Allow manual close — remove any previous listener first to prevent stacking
-    celebration.removeEventListener('click', _dismissCelebration);
-    celebration.addEventListener('click', _dismissCelebration, { once: true });
+    // Allow manual close by clicking.
+    // On Android, the tap that triggered Stop also synthesizes a click that
+    // hits this overlay. We swallow it here (once:true), then after the overlay
+    // hides a second ghost click can pass through to whatever is underneath
+    // (e.g. the re-enabled Start button). The resetTimer() call already sets
+    // pointer-events:none on the Start button for 600ms to absorb that.
+    celebration.addEventListener('click', () => {
+        celebration.classList.add('hidden');
+    }, { once: true });
 }
 
 function createConfetti() {
@@ -1025,7 +1017,7 @@ document.addEventListener('visibilitychange', function () {
         // Page is visible — recalculate to account for time that passed while hidden
         // Only sync if the timer is genuinely still running (timer handle is non-null
         // and we are not paused) to avoid resurrecting a stopped/reset timer.
-        if (timer !== null && !isPaused && startTime !== null && window._hiddenAtStd != null) {
+        if (timer !== null && !isPaused && startTime && window._hiddenAtStd != null) {
             const hiddenMs = Date.now() - window._hiddenAtStd;
             elapsedMilliseconds = window._elapsedAtHide + hiddenMs;
             startTime = performance.now() - elapsedMilliseconds;
@@ -1135,8 +1127,19 @@ function lerpColor(a, b, t) {
     };
 }
 
+// Throttle: background-color and box-shadow on <body> force a full-page repaint.
+// Running them at 60fps is the root cause of Android jank. They change so slowly
+// (over minutes) that once-per-second updates are visually indistinguishable.
+let _lastVisualUpdateSecond = -1;
+function _shouldUpdateVisuals() {
+    const nowSec = Math.floor(performance.now() / 1000);
+    if (nowSec === _lastVisualUpdateSecond) return false;
+    _lastVisualUpdateSecond = nowSec;
+    return true;
+}
+
 function updateDynamicBackground(progressRatio) {
-    // 0 = just started (cool blue tinge), 1 = deep into session (warm amber)
+    if (!_shouldUpdateVisuals()) return;
     const t = Math.min(Math.max(progressRatio, 0), 1);
     const col = t < 0.5 ? lerpColor(BG_START, BG_MID, t * 2) : lerpColor(BG_MID, BG_END, (t - 0.5) * 2);
     document.body.style.backgroundColor = `rgb(${col.r},${col.g},${col.b})`;
@@ -1144,12 +1147,21 @@ function updateDynamicBackground(progressRatio) {
 
 function resetDynamicBackground() {
     document.body.style.backgroundColor = '';
+    _lastVisualUpdateSecond = -1; // allow immediate update on next timer start
 }
 
 // ── 4. SCREEN EDGE GLOW ──────────────────────────────────
-// Intensity increases as custom timer drains OR std timer grows
+// Intensity increases as custom timer drains OR std timer grows.
+// box-shadow on <body> is NOT GPU-composited — it triggers a full repaint.
+// The throttle in updateDynamicBackground() already limits combined updates to 1/s.
+// updateEdgeGlow is always called right after updateDynamicBackground in the rAF
+// loop, so by the time we arrive here the throttle has already fired for this second.
+// We add a separate guard here as a safety net for any direct callers.
+let _lastGlowUpdateSecond = -1;
 function updateEdgeGlow(progressRatio) {
-    // progressRatio: 0 = beginning, 1 = end/urgency
+    const nowSec = Math.floor(performance.now() / 1000);
+    if (nowSec === _lastGlowUpdateSecond) return;
+    _lastGlowUpdateSecond = nowSec;
     const intensity = Math.min(progressRatio, 1);
 
     // Color: teal at start → amber mid → red at end
@@ -1175,6 +1187,7 @@ function updateEdgeGlow(progressRatio) {
 
 function resetEdgeGlow() {
     document.body.style.boxShadow = '';
+    _lastGlowUpdateSecond = -1; // allow immediate update on next timer start
 }
 
 
