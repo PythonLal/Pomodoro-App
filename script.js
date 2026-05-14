@@ -502,6 +502,8 @@ function startTimer() {
     updateCustomTimerControlsState();
 }
 
+const STD_RING_MAX_MS = 3600000; // 1 hour reference for background/glow
+
 function updateTimer() {
     // Guard: if timer was cleared (stop/reset), do not reschedule
     if (!timer && !isPaused) return;
@@ -510,6 +512,19 @@ function updateTimer() {
     elapsedMilliseconds = currentTime - startTime;
     updateTimerDisplay();
     updateFullscreenDisplay();
+
+    // Heartbeat pulse on each new second
+    const currentSecond = Math.floor(elapsedMilliseconds / 1000);
+    if (currentSecond !== lastHeartbeatSecond) {
+        lastHeartbeatSecond = currentSecond;
+        triggerHeartbeat(timerDisplay);
+    }
+
+    // Dynamic background & edge glow
+    const progress = Math.min(elapsedMilliseconds / STD_RING_MAX_MS, 1);
+    updateDynamicBackground(progress * 0.6);
+    updateEdgeGlow(progress);
+
     timer = requestAnimationFrame(updateTimer);
 }
 
@@ -532,6 +547,9 @@ function pauseOrResumeTimer() {
         startPauseTimer();
         updateTabStates();
         updateCustomTimerControlsState();
+        // Inline visual reset — window wrapper is never called by the button listener
+        resetEdgeGlow();
+        resetDynamicBackground();
     }
 }
 
@@ -605,6 +623,11 @@ function resetTimer() {
     saveState(true);
     updateTabStates();
     updateCustomTimerControlsState();
+    // Always reset visuals inline — don't rely on window wrapper which button
+    // listeners bypass (they capture the original function reference at bind time)
+    resetEdgeGlow();
+    resetDynamicBackground();
+    lastHeartbeatSecond = -1;
     // Don't clear messageDiv here — the caller sets it right after
 }
 
@@ -690,6 +713,24 @@ function updateCustomTimer() {
 
         updateCustomTimerDisplay();
         updateFullscreenDisplay();
+
+        if (customTotalTime > 0) {
+            const remaining = Math.max(0, customTotalTime - customElapsedTime);
+            const elapsed = customTotalTime - remaining;
+            const progress = elapsed / customTotalTime;
+
+            // Heartbeat pulse on each new second
+            const currentSecond = Math.floor(elapsed / 1000);
+            if (currentSecond !== lastCustomHeartbeatSecond) {
+                lastCustomHeartbeatSecond = currentSecond;
+                triggerHeartbeat(customTimerDisplay);
+            }
+
+            updateCustomRing();
+            updateDynamicBackground(progress);
+            updateEdgeGlow(progress);
+        }
+
         customTimer = requestAnimationFrame(updateCustomTimer);
     }
 }
@@ -711,6 +752,9 @@ function pauseOrResumeCustomTimer() {
         customMessageDiv.textContent = "Custom timer paused...";
         updateTabStates();
         updateCustomTimerControlsState();
+        // Inline visual reset — window wrapper is bypassed by button listeners
+        resetEdgeGlow();
+        resetDynamicBackground();
     }
 }
 
@@ -755,6 +799,15 @@ function resetCustomTimer() {
     }
     updateTabStates();
     updateCustomTimerControlsState();
+    // Inline visual resets — window wrapper is bypassed by button listeners
+    resetEdgeGlow();
+    resetDynamicBackground();
+    if (customRingFill) {
+        customRingFill.style.transition = 'none';
+        customRingFill.style.strokeDashoffset = RING_CIRCUMFERENCE;
+        requestAnimationFrame(() => { customRingFill.style.transition = ''; });
+    }
+    lastCustomHeartbeatSecond = -1;
 }
 
 function updateCustomTimerDisplay() {
@@ -1110,95 +1163,9 @@ function resetEdgeGlow() {
 // ─────────────────────────────────────────────────────────
 // HOOK INTO EXISTING TIMER FUNCTIONS
 // ─────────────────────────────────────────────────────────
-
-const STD_RING_MAX_MS = 3600000; // 1 hour reference for background/glow
-
-// Intercept standard timer update
-const _origUpdateTimerDisplay = updateTimerDisplay;
-window.updateTimerDisplay = function() {
-    _origUpdateTimerDisplay();
-
-    // Heartbeat: trigger on each new second
-    const currentSecond = Math.floor(elapsedMilliseconds / 1000);
-    if (currentSecond !== lastHeartbeatSecond && timer) {
-        lastHeartbeatSecond = currentSecond;
-        triggerHeartbeat(timerDisplay);
-    }
-
-    // Background & Edge Glow (for standard count-up, we use 60-min as reference)
-    if (timer && !isPaused) {
-        const progress = Math.min(elapsedMilliseconds / STD_RING_MAX_MS, 1);
-        updateDynamicBackground(progress * 0.6);
-        updateEdgeGlow(progress);
-    }
-};
-
-// Intercept custom timer update
-const _origUpdateCustomTimerDisplay = updateCustomTimerDisplay;
-window.updateCustomTimerDisplay = function() {
-    _origUpdateCustomTimerDisplay();
-
-    if (customTotalTime > 0) {
-        const remaining = Math.max(0, customTotalTime - customElapsedTime);
-        const elapsed = customTotalTime - remaining;
-        const progress = elapsed / customTotalTime; // 0→1 as time is consumed
-
-        // Heartbeat on each new second
-        const currentSecond = Math.floor(elapsed / 1000);
-        if (currentSecond !== lastCustomHeartbeatSecond && customIsRunning && !customIsPaused) {
-            lastCustomHeartbeatSecond = currentSecond;
-            triggerHeartbeat(customTimerDisplay);
-        }
-
-        updateCustomRing();
-
-        if (customIsRunning && !customIsPaused) {
-            updateDynamicBackground(progress);
-            updateEdgeGlow(progress);
-        }
-    }
-};
-
-// Hook into pause/resume — reset glow/background while paused
-const _origPauseOrResumeTimer = pauseOrResumeTimer;
-window.pauseOrResumeTimer = function() {
-    _origPauseOrResumeTimer();
-    if (isPaused) {
-        resetEdgeGlow();
-        resetDynamicBackground();
-    }
-};
-
-const _origPauseOrResumeCustomTimer = pauseOrResumeCustomTimer;
-window.pauseOrResumeCustomTimer = function() {
-    _origPauseOrResumeCustomTimer();
-    if (customIsPaused) {
-        resetEdgeGlow();
-        resetDynamicBackground();
-    }
-};
-
-// Reset visuals on stop/reset
-const _origResetTimer = resetTimer;
-window.resetTimer = function() {
-    _origResetTimer();
-    resetEdgeGlow();
-    resetDynamicBackground();
-    lastHeartbeatSecond = -1;
-};
-
-const _origResetCustomTimer = resetCustomTimer;
-window.resetCustomTimer = function() {
-    _origResetCustomTimer();
-    resetEdgeGlow();
-    resetDynamicBackground();
-    if (customRingFill) {
-        customRingFill.style.transition = 'none';
-        customRingFill.style.strokeDashoffset = RING_CIRCUMFERENCE;
-        // Re-enable transition after a frame so future updates animate
-        requestAnimationFrame(() => {
-            customRingFill.style.transition = '';
-        });
-    }
-    lastCustomHeartbeatSecond = -1;
-};
+// NOTE: Visual side-effects (resetEdgeGlow, resetDynamicBackground, heartbeat,
+// ring reset) are inlined directly into resetTimer, resetCustomTimer,
+// pauseOrResumeTimer, and pauseOrResumeCustomTimer.
+// The old window.* wrapper pattern was unreliable because button listeners
+// capture the original function reference at addEventListener time, so the
+// wrappers were silently bypassed on every button click.
