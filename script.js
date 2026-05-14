@@ -64,7 +64,58 @@ const customAlarmVolumeSlider = document.getElementById("custom-alarm-volume");
 document.addEventListener('DOMContentLoaded', function () {
     initializeApp();
     requestNotificationPermission();
+    setupAndroidAudioUnlock();
+    setupTouchFriendlySliders();
 });
+
+// ── Android Audio Context Unlock ──────────────────────────
+// Android Chrome requires a user gesture to unlock AudioContext/media playback.
+// We pre-unlock on the first touch anywhere on the page.
+function setupAndroidAudioUnlock() {
+    let unlocked = false;
+    function unlockAudio() {
+        if (unlocked) return;
+        unlocked = true;
+        // Create a silent AudioContext to unlock audio on Android
+        try {
+            const AudioContext = window.AudioContext || window.webkitAudioContext;
+            if (AudioContext) {
+                const ctx = new AudioContext();
+                const buf = ctx.createBuffer(1, 1, 22050);
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(ctx.destination);
+                src.start(0);
+                setTimeout(() => ctx.close(), 500);
+            }
+        } catch(e) {}
+        // Also attempt to load and briefly play/pause HTML audio elements
+        [alarmSoundHigh, alarmSound].forEach(el => {
+            if (!el) return;
+            el.volume = 0;
+            el.play().then(() => { el.pause(); el.currentTime = 0; el.volume = 0.5; }).catch(() => {});
+        });
+        document.removeEventListener('touchstart', unlockAudio, true);
+        document.removeEventListener('touchend', unlockAudio, true);
+        document.removeEventListener('click', unlockAudio, true);
+    }
+    document.addEventListener('touchstart', unlockAudio, { passive: true, capture: true });
+    document.addEventListener('touchend',   unlockAudio, { passive: true, capture: true });
+    document.addEventListener('click',      unlockAudio, { capture: true });
+}
+
+// ── Touch-friendly range sliders ─────────────────────────
+// Make volume sliders respond naturally to touch drag on Android
+function setupTouchFriendlySliders() {
+    [alarmVolumeSlider, customAlarmVolumeSlider].forEach(slider => {
+        if (!slider) return;
+        slider.addEventListener('touchstart', () => {}, { passive: true });
+        slider.addEventListener('touchmove', (e) => {
+            // Allow the default slider drag; just prevent page scroll
+            e.stopPropagation();
+        }, { passive: true });
+    });
+}
 
 function initializeApp() {
     loadSavedState();
@@ -285,11 +336,35 @@ function toggleFullscreen() {
     } else {
         fsStatus.textContent = 'Focus Time';
     }
+
+    // Try native fullscreen API on Android (works in Chrome Android)
+    if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen().catch(() => {});
+    } else if (document.documentElement.webkitRequestFullscreen) {
+        document.documentElement.webkitRequestFullscreen();
+    }
 }
 
 function exitFullscreen() {
     fullscreenOverlay.classList.add('hidden');
+    // Exit native fullscreen if active
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+        if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    }
 }
+
+// Close fullscreen overlay if native fullscreen is exited (e.g. back button on Android)
+document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        fullscreenOverlay.classList.add('hidden');
+    }
+});
+document.addEventListener('webkitfullscreenchange', () => {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        fullscreenOverlay.classList.add('hidden');
+    }
+});
 
 function updateFullscreenDisplay() {
     const activeTab = document.querySelector('.tab-button.active').dataset.tab;
@@ -786,21 +861,38 @@ function saveState(reset = false) {
     }
 }
 
-// Visibility change handler for better performance
+// Visibility change handler — critical for Android (screen off, app switch)
 document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
-        // Page is hidden, could pause non-essential animations
-        return;
+        // Page is hidden — record the wall-clock time so we can catch up
+        if (timer && startTime) {
+            // Store the timestamp so we can calculate drift when we return
+            window._hiddenAtStd = Date.now();
+            window._elapsedAtHide = elapsedMilliseconds;
+        }
+        if (customTimer && customStartTime) {
+            window._hiddenAtCustom = Date.now();
+            window._customElapsedAtHide = customElapsedTime;
+        }
     } else {
-        // Page is visible, resume normal operation
-        if (timer || customTimer) {
-            // Recalculate timing to account for any drift
-            if (timer && startTime) {
-                elapsedMilliseconds = performance.now() - startTime;
-                updateTimerDisplay();
-            }
-            if (customTimer && customStartTime) {
-                customElapsedTime = performance.now() - customStartTime;
+        // Page is visible — recalculate to account for time that passed while hidden
+        if (timer && startTime && window._hiddenAtStd != null) {
+            const hiddenMs = Date.now() - window._hiddenAtStd;
+            elapsedMilliseconds = window._elapsedAtHide + hiddenMs;
+            startTime = performance.now() - elapsedMilliseconds;
+            window._hiddenAtStd = null;
+            updateTimerDisplay();
+        }
+        if (customIsRunning && !customIsPaused && window._hiddenAtCustom != null) {
+            const hiddenMs = Date.now() - window._hiddenAtCustom;
+            customElapsedTime = window._customElapsedAtHide + hiddenMs;
+            customStartTime = performance.now() - customElapsedTime;
+            window._hiddenAtCustom = null;
+            // Check if custom timer completed while hidden
+            if (customElapsedTime >= customTotalTime) {
+                customElapsedTime = customTotalTime;
+                completeCustomTimer();
+            } else {
                 updateCustomTimerDisplay();
             }
         }

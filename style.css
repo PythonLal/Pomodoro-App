@@ -941,6 +941,44 @@ h1 {
     opacity: 0.7;
 }
 
+/* Hide keyboard hint on touch devices — not relevant on Android */
+@media (hover: none) and (pointer: coarse) {
+    .kb-hint { display: none; }
+}
+
+/* ── Touch & Android Global Fixes ────────────────────── */
+* {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+}
+
+input, select, button {
+    -webkit-appearance: none;
+    touch-action: manipulation;
+}
+
+/* Prevent number input spinners on mobile */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+}
+input[type="number"] { -moz-appearance: textfield; }
+
+/* Ensure range inputs work well on Android */
+input[type="range"] {
+    -webkit-appearance: none;
+    touch-action: pan-x;
+}
+
+/* Safe area insets for Android notch/cutout support */
+body {
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+}
+
 /* ── Reduced Motion ───────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
@@ -966,27 +1004,167 @@ h1 {
 
 /* ── Responsive: 480px ────────────────────────────────── */
 @media (max-width: 480px) {
-    .container { padding: 18px 14px; margin: 8px; border-radius: var(--radius-md); }
+    body { padding: 8px; }
+    .container {
+        padding: 18px 14px;
+        margin: 0;
+        border-radius: var(--radius-md);
+        /* Stretch to fill more of the screen on small phones */
+        min-height: calc(100vh - 16px);
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+    }
+
     h1 { font-size: 1.2rem; }
-    .header { flex-direction: column; gap: 12px; }
-    .timer, .custom-timer { font-size: 2.4rem; letter-spacing: 2px; }
-    .tab-buttons { flex-direction: column; gap: 4px; }
-    .time-inputs { flex-direction: column; align-items: center; gap: 14px; }
-    .controls, .custom-controls { flex-direction: column; align-items: center; }
-    .controls button, .custom-controls button { width: 100%; max-width: 200px; }
-    .preset-buttons { justify-content: center; }
-    .fullscreen-timer { font-size: 3.4rem; letter-spacing: 3px; }
+    .header { flex-direction: row; gap: 8px; }
+
+    .timer { font-size: 2.6rem; letter-spacing: 1px; margin: 18px 0; }
+    .custom-timer { font-size: 2.6rem; letter-spacing: 1px; }
+
+    /* Keep tab buttons side-by-side on mobile — easier to tap */
+    .tab-buttons { flex-direction: row; gap: 4px; }
+    .tab-button { padding: 10px 8px; font-size: 0.82rem; }
+
+    /* Time inputs: row on mobile, bigger touch targets */
+    .time-inputs { flex-direction: row; justify-content: center; gap: 10px; }
+    .input-group input {
+        width: 64px;
+        padding: 12px 6px;
+        font-size: 1.1rem;
+        /* Bigger touch target */
+        min-height: 48px;
+    }
+    .input-group label { font-size: 0.68rem; }
+
+    /* Controls: side by side, full width each */
+    .controls, .custom-controls {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+    }
+    .controls button, .custom-controls button {
+        flex: 1 1 calc(33% - 8px);
+        min-width: 80px;
+        max-width: none;
+        padding: 13px 8px;
+        font-size: 0.9rem;
+        /* Minimum 44px tall touch target per Android guidelines */
+        min-height: 48px;
+    }
+
+    /* Alarm row: tighten up */
+    .alarm-selection, .custom-alarm-selection {
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+    }
+    .alarm-selection select, .custom-alarm-selection select {
+        padding: 10px 10px;
+        font-size: 0.9rem;
+        min-height: 44px;
+    }
+    #alarm-volume, #custom-alarm-volume {
+        width: 80px;
+        /* Taller touch zone for range slider */
+        height: 20px;
+        cursor: pointer;
+    }
+    /* Keep the visual track thin but the hit area large */
+    #alarm-volume::-webkit-slider-runnable-track,
+    #custom-alarm-volume::-webkit-slider-runnable-track {
+        height: 3px;
+    }
+    #alarm-volume::-webkit-slider-thumb,
+    #custom-alarm-volume::-webkit-slider-thumb {
+        width: 22px;
+        height: 22px;
+        margin-top: -10px;
+    }
+
+    /* Preset buttons — bigger tap area */
+    .preset-buttons { justify-content: center; gap: 6px; }
+    .preset-btn {
+        padding: 10px 14px;
+        font-size: 0.88rem;
+        min-height: 44px;
+    }
+
+    /* Progress ring — slightly smaller to fit */
+    .custom-timer-ring-wrapper { width: 220px; height: 220px; }
+
+    /* Fullscreen overlay */
+    .fullscreen-timer { font-size: 3.8rem; letter-spacing: 3px; }
     .fullscreen-status { font-size: 0.72rem; }
-    #exit-fullscreen { top: 16px; right: 16px; width: 36px; height: 36px; }
-    .alarm-selection, .custom-alarm-selection { flex-wrap: wrap; gap: 8px; }
-    #alarm-volume, #custom-alarm-volume { width: 70px; }
-    .celebration-text { font-size: 1.6rem; }
+    #exit-fullscreen { top: 16px; right: 16px; width: 44px; height: 44px; font-size: 1.2rem; }
+
+    /* Celebration */
+    .celebration-text { font-size: 1.8rem; }
     .celebration-subtext { font-size: 0.82rem; }
+    .celebration-icon { font-size: 4rem; }
+
+    /* Rest modal */
+    .rest-modal { padding: 24px 20px; width: 92%; }
+    .rest-ring-wrapper { width: 170px; height: 170px; }
+    .rest-countdown { font-size: 2.2rem; }
+    .rest-skip-btn { min-height: 44px; padding: 12px 28px; }
+
+    /* Header fullscreen button */
+    .header-controls button { width: 44px; height: 44px; }
 }
 
-/* ── Responsive: 320px ────────────────────────────────── */
+/* ── Responsive: 390px (common Android mid-size) ──────── */
+@media (max-width: 390px) {
+    .timer { font-size: 2.2rem; }
+    .custom-timer { font-size: 2.2rem; }
+    .time-inputs { gap: 8px; }
+    .input-group input { width: 58px; }
+    .custom-timer-ring-wrapper { width: 200px; height: 200px; }
+    .controls button, .custom-controls button {
+        flex: 1 1 calc(33% - 6px);
+        font-size: 0.84rem;
+        padding: 12px 6px;
+    }
+    .fullscreen-timer { font-size: 3.2rem; }
+}
+
+/* ── Responsive: 320px (small Android) ───────────────── */
 @media (max-width: 320px) {
-    .timer, .custom-timer { font-size: 1.9rem; }
+    .timer, .custom-timer { font-size: 1.9rem; letter-spacing: 0; }
     .fullscreen-timer { font-size: 2.5rem; }
     .celebration-text { font-size: 1.3rem; }
+    .custom-timer-ring-wrapper { width: 180px; height: 180px; }
+    .time-inputs { gap: 6px; }
+    .input-group input { width: 52px; font-size: 0.95rem; }
+    .tab-button { font-size: 0.76rem; padding: 9px 6px; }
+    .controls button, .custom-controls button { font-size: 0.8rem; padding: 11px 4px; }
+}
+
+/* ── Landscape on small screens ───────────────────────── */
+@media (max-height: 500px) and (orientation: landscape) {
+    body { padding: 6px; align-items: flex-start; }
+    .container {
+        padding: 12px 16px;
+        min-height: unset;
+        max-width: 100%;
+        border-radius: var(--radius-sm);
+    }
+    .header { margin-bottom: 10px; }
+    .tab-container { margin-bottom: 10px; }
+    .timer { font-size: 2.2rem; margin: 10px 0; }
+    .custom-timer { font-size: 2.2rem; }
+    .alarm-selection, .custom-alarm-selection { margin-bottom: 10px; }
+    .controls, .custom-controls { margin-bottom: 10px; gap: 6px; }
+    .controls button, .custom-controls button { padding: 9px 14px; min-height: 40px; }
+    .custom-timer-ring-wrapper { width: 160px; height: 160px; margin: 8px auto; }
+    .custom-timer-setup { margin-bottom: 10px; }
+    .fullscreen-timer { font-size: 5rem; }
+    /* Two-column layout in landscape */
+    #standard-tab { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; align-items: center; }
+    #standard-tab .timer { grid-column: 1; margin: 0; }
+    #standard-tab .alarm-selection { grid-column: 2; }
+    #standard-tab .controls { grid-column: 1 / -1; }
+    #standard-tab .kb-hint { grid-column: 1 / -1; }
+    #standard-tab #message { grid-column: 1 / -1; }
 }

@@ -48,6 +48,14 @@ A polished, feature-rich Pomodoro timer app built with vanilla HTML, CSS, and Ja
 | `F` | Toggle fullscreen overlay |
 | `Escape` | Exit fullscreen or skip break modal |
 
+### 📱 Mobile & Android Support
+- Fully responsive layout across all screen sizes — phones, tablets, landscape and portrait
+- Touch-optimized controls with minimum 44–48px tap targets
+- Native fullscreen mode via Android Chrome's Fullscreen API (including hardware back button support)
+- Audio unlocks automatically on first touch — alarms play reliably without extra steps
+- Safe area support for notch and punch-hole displays
+- Timers stay accurate after screen lock or app switching
+
 ### 🔔 Browser Notifications
 - Native desktop notifications on session completion (with permission)
 
@@ -120,7 +128,7 @@ This app is a fully static site — deploy it anywhere that serves HTML files.
 ## 🛠 Technical Notes
 
 - Uses `requestAnimationFrame` for smooth, high-precision timer updates
-- Handles tab visibility changes to prevent timer drift when the window is backgrounded
+- Handles tab visibility changes and screen lock using wall-clock time to prevent timer drift on Android
 - All user preferences (volume, session history) are persisted via `localStorage`
 - Fully accessible: ARIA labels, live regions, and semantic roles throughout
 - No external JavaScript dependencies
