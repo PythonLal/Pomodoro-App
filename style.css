@@ -578,17 +578,21 @@ h1 {
 /* ── Rest Timer Modal ─────────────────────────────────── */
 .rest-overlay {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(8, 5, 2, 0.88);
-    backdrop-filter: blur(8px);
+    /* backdrop-filter omitted — causes blank overlay on many Android browsers */
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: 1500;
-    animation: fadeIn 0.35s ease;
+    animation: fadeIn 0.35s ease both;
 }
 
-.rest-overlay.hidden { display: none; }
+.rest-overlay.hidden {
+    display: none;
+    visibility: hidden;
+    pointer-events: none;
+}
 
 .rest-modal {
     background: var(--bg-surface);
@@ -693,7 +697,7 @@ h1 {
 /* ── Fullscreen ───────────────────────────────────────── */
 .fullscreen-overlay {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
     background: var(--bg-pure);
     display: flex;
     justify-content: center;
@@ -759,18 +763,26 @@ h1 {
 /* ── Celebration ──────────────────────────────────────── */
 .celebration {
     position: fixed;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(8, 5, 2, 0.92);
+    /* backdrop-filter intentionally omitted — not composited on Android,
+       causes blank overlay or missed animation frames */
     display: flex;
     justify-content: center;
     align-items: center;
     z-index: 2000;
-    animation: celebFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+    animation: celebFadeIn 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
     cursor: pointer;
     overflow: hidden;
 }
 
-.celebration.hidden { display: none; }
+/* Use visibility+pointer-events instead of display:none so Android doesn't
+   drop the opening animation frame when toggling display on the same tick */
+.celebration.hidden {
+    display: none;
+    visibility: hidden;
+    pointer-events: none;
+}
 
 .celebration-content {
     text-align: center;
@@ -836,7 +848,7 @@ h1 {
 
 .confetti {
     position: absolute;
-    inset: 0;
+    top: 0; left: 0; right: 0; bottom: 0;
     pointer-events: none;
     overflow: hidden;
 }
@@ -866,8 +878,8 @@ h1 {
 
 /* ── Celebration Animations ───────────────────────────── */
 @keyframes celebFadeIn {
-    from { opacity: 0; backdrop-filter: blur(0px); }
-    to   { opacity: 1; backdrop-filter: blur(4px); }
+    from { opacity: 0; }
+    to   { opacity: 1; }
 }
 
 @keyframes ringPulse {

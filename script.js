@@ -861,12 +861,21 @@ function showRestModal(restSeconds, workMinutes) {
         restRingFill.style.strokeDashoffset = '0';
     }
 
+    // On Android, toggling display and expecting the CSS animation to fire on
+    // the same frame is unreliable. Show the overlay first, then start the
+    // rAF loop on the next frame so the element is painted before we animate.
     restOverlay.classList.remove('hidden');
-    restStartTime = performance.now();
-    restRaf = requestAnimationFrame(tickRestTimer);
+    restStartTime = null; // will be set in the deferred frame
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            restStartTime = performance.now();
+            restRaf = requestAnimationFrame(tickRestTimer);
+        });
+    });
 }
 
 function tickRestTimer(now) {
+    if (!restStartTime) { restRaf = requestAnimationFrame(tickRestTimer); return; } // deferred init
     if (restTotalMs <= 0) { endRestTimer(true); return; } // safety guard
     const elapsed = now - restStartTime;
     const remaining = Math.max(0, restTotalMs - elapsed);
@@ -920,7 +929,12 @@ function startRestTimer(restSeconds) {
 
 // Celebration Animation
 function showCelebration() {
+    // On Android, removing .hidden and expecting CSS animation to fire on the
+    // same frame is unreliable — the browser may not repaint before animating.
+    // Defer by one rAF so the element is actually visible before animating.
     celebration.classList.remove('hidden');
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
 
     // Create shockwave rings
     const confettiContainer = document.querySelector('.confetti');
@@ -935,6 +949,9 @@ function showCelebration() {
 
     // Create confetti particles
     createConfetti();
+
+        }); // end inner rAF
+    }); // end outer rAF
 
     // Auto-hide after 5 seconds
     setTimeout(() => {
