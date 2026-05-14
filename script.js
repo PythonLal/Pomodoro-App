@@ -7,6 +7,9 @@ let pausedMilliseconds = 0;
 let isPaused = false;
 let completedSessions = 0;
 let sessionData = JSON.parse(localStorage.getItem("sessionData")) || [];
+// Guard flag: true after resetTimer() to swallow the Android ghost-click that
+// fires on the Start button after the celebration overlay disappears.
+let _blockStartUntilNextGesture = false;
 
 // Global Variables for Custom Timer
 let customStartTime = null;
@@ -487,6 +490,11 @@ function handleKeyboardShortcuts(e) {
 
 // Standard Timer Functions
 function startTimer() {
+    // Swallow the Android ghost-click that arrives after stop → reset → celebration
+    if (_blockStartUntilNextGesture) {
+        _blockStartUntilNextGesture = false;
+        return;
+    }
     // Always a fresh start — resume is handled by pauseOrResumeTimer
     startTime = performance.now();
     elapsedMilliseconds = 0;
@@ -505,9 +513,10 @@ function startTimer() {
 const STD_RING_MAX_MS = 3600000; // 1 hour reference for background/glow
 
 function updateTimer() {
-    // Guard: if timer was cleared (stop/reset), do not reschedule
-    if (!timer && !isPaused) return;
-    if (isPaused) return;
+    // Guard: if timer was cleared (stop/reset) or startTime was nulled, bail out.
+    // Checking startTime handles the Android case where a stale rAF callback fires
+    // in the same frame as cancelAnimationFrame (timer is already null here).
+    if (timer === null || isPaused || startTime === null) return;
     const currentTime = performance.now();
     elapsedMilliseconds = currentTime - startTime;
     updateTimerDisplay();
@@ -614,6 +623,7 @@ function resetTimer() {
     isPaused = false;
     cancelAnimationFrame(timer);
     timer = null;
+    startTime = null;          // FIX: null startTime so stale rAF frames can't drift
     clearInterval(pauseTimer);
     pauseButton.textContent = "Pause";
     startButton.disabled = false;
@@ -629,10 +639,11 @@ function resetTimer() {
     resetDynamicBackground();
     lastHeartbeatSecond = -1;
     // Block ghost clicks on Android: after a stop, Android synthesizes a delayed
-    // click that passes through the celebration overlay onto the Start button.
-    // Briefly disabling pointer-events absorbs it without affecting UX.
-    startButton.style.pointerEvents = 'none';
-    setTimeout(() => { startButton.style.pointerEvents = ''; }, 600);
+    // click that can land on the Start button once the celebration overlay is gone.
+    // We use a flag checked inside startTimer() rather than a timed pointer-events
+    // patch, which could expire before the ghost click arrives (or freeze the button
+    // if the overlay swallows the real click first).
+    _blockStartUntilNextGesture = true;
     // Don't clear messageDiv here — the caller sets it right after
 }
 
@@ -1017,7 +1028,7 @@ document.addEventListener('visibilitychange', function () {
         // Page is visible — recalculate to account for time that passed while hidden
         // Only sync if the timer is genuinely still running (timer handle is non-null
         // and we are not paused) to avoid resurrecting a stopped/reset timer.
-        if (timer !== null && !isPaused && startTime && window._hiddenAtStd != null) {
+        if (timer !== null && !isPaused && startTime !== null && window._hiddenAtStd != null) {
             const hiddenMs = Date.now() - window._hiddenAtStd;
             elapsedMilliseconds = window._elapsedAtHide + hiddenMs;
             startTime = performance.now() - elapsedMilliseconds;
