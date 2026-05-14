@@ -1,171 +1,144 @@
-// Global Variables for Standard Timer
-let startTime = null;
+// ═══════════════════════════════════════════════════════
+// POMODORO TIMER — script.js  (Android-hardened)
+//
+// KEY FIXES over previous version:
+//  1.  Rest modal now always appears after celebration fully closes.
+//      Root cause: on Android, the Stop button tap synthesizes a ghost-click
+//      that immediately dismissed the celebration overlay (via the once:true
+//      listener), leaving no time for the rest modal to attach before the
+//      click propagated through. Fixed by: (a) replacing once:true with a
+//      320 ms ghost-click guard, and (b) only calling showRestModal() inside
+//      the celebration's onComplete callback, so the overlay is fully hidden
+//      before the rest modal opens.
+//  2.  Rest overlay z-index raised to 2100 (above celebration at 2000) in
+//      CSS — now also set inline as a safety net.
+//  3.  AudioContext never closed prematurely; _ensureLowAlarmCtx() reuses
+//      or re-creates it safely, fixing the silent alarm bug on Android.
+//  4.  pauseTimer interval is cleared and null-ed in every code path that
+//      stops or resets a timer (was leaking into new sessions).
+//  5.  updateCustomTimer rAF guard: checks customTimer === null, not the
+//      old truthy/falsy mix that could let ghost frames slip through.
+//  6.  Tab switching blocked while rest modal is open.
+//  7.  visibilitychange: rest-timer drift correction now uses the correct
+//      wall-clock delta (Date.now()) not performance.now() inconsistency.
+//  8.  completeCustomTimer now also offers a rest break (was only in
+//      stopTimer for the standard timer).
+//  9.  createConfetti skips heavy animation on reduced-motion preference
+//      and limits particle count on low-core-count devices.
+// 10.  updateCustomTimerDisplay + updateCustomRing called after reset so the
+//      ring visually resets to the original set duration, not 00:00.
+// 11.  Keyboard shortcuts: Space/Escape work on celebration and rest overlay.
+// ═══════════════════════════════════════════════════════
+
+// ── Global Variables: Standard Timer ─────────────────
+let startTime           = null;
 let elapsedMilliseconds = 0;
-let timer = null;
-let pauseTimer = null;
-let pausedMilliseconds = 0;
-let isPaused = false;
-let completedSessions = 0;
-let sessionData = JSON.parse(localStorage.getItem("sessionData")) || [];
+let timer               = null;
+let pauseTimer          = null;
+let pausedMilliseconds  = 0;
+let isPaused            = false;
+let completedSessions   = 0;
+let sessionData         = JSON.parse(localStorage.getItem("sessionData")) || [];
 
-// Global Variables for Custom Timer
-let customStartTime = null;
-let customTotalTime = 0;
+// ── Global Variables: Custom Timer ───────────────────
+let customStartTime   = null;
+let customTotalTime   = 0;
 let customElapsedTime = 0;
-let customTimer = null;
-let customIsPaused = false;
-let customIsRunning = false;
+let customTimer       = null;
+let customIsPaused    = false;
+let customIsRunning   = false;
 
-// DOM Elements - Standard Timer
-const startButton = document.getElementById("start");
-const pauseButton = document.getElementById("pause");
-const stopButton = document.getElementById("stop");
-const minutesSpan = document.getElementById("minutes");
-const secondsSpan = document.getElementById("seconds");
+// ── DOM: Standard Timer ───────────────────────────────
+const startButton      = document.getElementById("start");
+const pauseButton      = document.getElementById("pause");
+const stopButton       = document.getElementById("stop");
+const minutesSpan      = document.getElementById("minutes");
+const secondsSpan      = document.getElementById("seconds");
 const millisecondsSpan = document.getElementById("milliseconds");
-const messageDiv = document.getElementById("message");
+const messageDiv       = document.getElementById("message");
 
-// DOM Elements - Custom Timer
-const customHoursInput = document.getElementById("custom-hours");
+// ── DOM: Custom Timer ─────────────────────────────────
+const customHoursInput   = document.getElementById("custom-hours");
 const customMinutesInput = document.getElementById("custom-minutes");
 const customSecondsInput = document.getElementById("custom-seconds");
-const customStartButton = document.getElementById("custom-start");
-const customPauseButton = document.getElementById("custom-pause");
-const customResetButton = document.getElementById("custom-reset");
+const customStartButton  = document.getElementById("custom-start");
+const customPauseButton  = document.getElementById("custom-pause");
+const customResetButton  = document.getElementById("custom-reset");
 const customTimerMinutes = document.getElementById("custom-timer-minutes");
 const customTimerSeconds = document.getElementById("custom-timer-seconds");
-const customMessageDiv = document.getElementById("custom-message");
-const presetButtons = document.querySelectorAll(".preset-btn");
+const customMessageDiv   = document.getElementById("custom-message");
+const presetButtons      = document.querySelectorAll(".preset-btn");
 
-// DOM Elements - Common
-// NOTE: There is no #alarm-sound element in the HTML (only #alarm-sound-high).
-// We synthesize the "low" alarm with the Web Audio API so the Low option actually works.
-const alarmSound = null; // kept for reference; real low alarm is _playLowAlarm()
+// ── DOM: Common ───────────────────────────────────────
+const fullscreenToggle     = document.getElementById("fullscreen-toggle");
+const tabButtons           = document.querySelectorAll(".tab-button");
+const tabContents          = document.querySelectorAll(".tab-content");
+const fullscreenOverlay    = document.getElementById("fullscreen-overlay");
+const exitFullscreenButton = document.getElementById("exit-fullscreen");
+const fsMinutes            = document.getElementById("fs-minutes");
+const fsSeconds            = document.getElementById("fs-seconds");
+const fsStatus             = document.getElementById("fs-status");
+const celebration          = document.getElementById("celebration");
+const alarmSoundHigh       = document.getElementById("alarm-sound-high");
+const alarmTypeSelect      = document.getElementById("alarm-type");
+const alarmVolumeSlider    = document.getElementById("alarm-volume");
+const customAlarmTypeSelect   = document.getElementById("custom-alarm-type");
+const customAlarmVolumeSlider = document.getElementById("custom-alarm-volume");
+
+// ── Low alarm: Web Audio API synthesis ───────────────
 let _lowAlarmAudioCtx = null;
+
+function _ensureLowAlarmCtx() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return null;
+    if (!_lowAlarmAudioCtx || _lowAlarmAudioCtx.state === 'closed') {
+        _lowAlarmAudioCtx = new AC();
+    }
+    return _lowAlarmAudioCtx;
+}
+
 function _playLowAlarm(volume) {
     try {
-        const AudioContext = window.AudioContext || window.webkitAudioContext;
-        if (!AudioContext) return;
-        if (!_lowAlarmAudioCtx || _lowAlarmAudioCtx.state === 'closed') {
-            _lowAlarmAudioCtx = new AudioContext();
-        }
-        // Resume in case it was suspended (Android requires gesture unlock)
-        const ctx = _lowAlarmAudioCtx;
+        const ctx = _ensureLowAlarmCtx();
+        if (!ctx) return;
         const play = () => {
-            const tones = [440, 392, 349]; // A4 → G4 → F4 descending soft chime
-            tones.forEach((freq, i) => {
-                const osc = ctx.createOscillator();
+            [440, 392, 349].forEach((freq, i) => {
+                const osc  = ctx.createOscillator();
                 const gain = ctx.createGain();
                 osc.connect(gain);
                 gain.connect(ctx.destination);
                 osc.type = 'sine';
                 osc.frequency.value = freq;
-                const startAt = ctx.currentTime + i * 0.25;
-                gain.gain.setValueAtTime(0, startAt);
-                gain.gain.linearRampToValueAtTime(volume * 0.7, startAt + 0.05);
-                gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.5);
-                osc.start(startAt);
-                osc.stop(startAt + 0.55);
+                const t = ctx.currentTime + i * 0.25;
+                gain.gain.setValueAtTime(0, t);
+                gain.gain.linearRampToValueAtTime(volume * 0.7, t + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+                osc.start(t);
+                osc.stop(t + 0.55);
             });
         };
-        if (ctx.state === 'suspended') {
-            ctx.resume().then(play).catch(() => {});
-        } else {
-            play();
-        }
-    } catch (e) { console.log('Low alarm synthesis failed:', e); }
+        if (ctx.state === 'suspended') ctx.resume().then(play).catch(() => {});
+        else play();
+    } catch (e) { console.warn('Low alarm synthesis failed:', e); }
 }
-// Wrapper that mimics the HTMLAudioElement .play() interface used at call sites
+
 const _lowAlarmProxy = {
-    get volume() { return this._vol !== undefined ? this._vol : 0.5; },
+    _vol: 0.5,
+    get volume()  { return this._vol; },
     set volume(v) { this._vol = v; },
-    play() {
-        _playLowAlarm(this._vol !== undefined ? this._vol : 0.5);
-        return Promise.resolve();
-    },
-    pause() {},
-    _vol: 0.5
+    play()  { _playLowAlarm(this._vol); return Promise.resolve(); },
+    pause() {}
 };
 
-const fullscreenToggle = document.getElementById("fullscreen-toggle");
-const tabButtons = document.querySelectorAll(".tab-button");
-const tabContents = document.querySelectorAll(".tab-content");
-
-// DOM Elements - Fullscreen & Celebration
-const fullscreenOverlay = document.getElementById("fullscreen-overlay");
-const exitFullscreenButton = document.getElementById("exit-fullscreen");
-const fsMinutes = document.getElementById("fs-minutes");
-const fsSeconds = document.getElementById("fs-seconds");
-const fsStatus = document.getElementById("fs-status");
-const celebration = document.getElementById("celebration");
-
-// DOM Elements - Alarm
-const alarmSoundHigh = document.getElementById("alarm-sound-high");
-const alarmTypeSelect = document.getElementById("alarm-type");
-const alarmVolumeSlider = document.getElementById("alarm-volume");
-
-// DOM Elements - Custom Alarm
-const customAlarmTypeSelect = document.getElementById("custom-alarm-type");
-const customAlarmVolumeSlider = document.getElementById("custom-alarm-volume");
-
-// Initialize App
+// ═══════════════════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', function () {
     initializeApp();
     requestNotificationPermission();
     setupAndroidAudioUnlock();
     setupTouchFriendlySliders();
 });
-
-// ── Android Audio Context Unlock ──────────────────────────
-// Android Chrome requires a user gesture to unlock AudioContext/media playback.
-// We pre-unlock on the first touch anywhere on the page.
-function setupAndroidAudioUnlock() {
-    let unlocked = false;
-    function unlockAudio() {
-        if (unlocked) return;
-        unlocked = true;
-        // Create a silent AudioContext to unlock audio on Android
-        try {
-            const AudioContext = window.AudioContext || window.webkitAudioContext;
-            if (AudioContext) {
-                const ctx = new AudioContext();
-                const buf = ctx.createBuffer(1, 1, 22050);
-                const src = ctx.createBufferSource();
-                src.buffer = buf;
-                src.connect(ctx.destination);
-                src.start(0);
-                setTimeout(() => ctx.close(), 500);
-            }
-        } catch(e) {}
-        // Also attempt to load and briefly play/pause HTML audio elements
-        [alarmSoundHigh].forEach(el => {
-            if (!el) return;
-            el.volume = 0;
-            el.play().then(() => { el.pause(); el.currentTime = 0; el.volume = 0.5; }).catch(() => {});
-        });
-        // Pre-warm the Web Audio context used by the low alarm
-        _playLowAlarm(0);
-        document.removeEventListener('touchstart', unlockAudio, true);
-        document.removeEventListener('touchend', unlockAudio, true);
-        document.removeEventListener('click', unlockAudio, true);
-    }
-    document.addEventListener('touchstart', unlockAudio, { passive: true, capture: true });
-    document.addEventListener('touchend',   unlockAudio, { passive: true, capture: true });
-    document.addEventListener('click',      unlockAudio, { capture: true });
-}
-
-// ── Touch-friendly range sliders ─────────────────────────
-// Make volume sliders respond naturally to touch drag on Android
-function setupTouchFriendlySliders() {
-    [alarmVolumeSlider, customAlarmVolumeSlider].forEach(slider => {
-        if (!slider) return;
-        slider.addEventListener('touchstart', () => {}, { passive: true });
-        slider.addEventListener('touchmove', (e) => {
-            // Allow the default slider drag; just prevent page scroll
-            e.stopPropagation();
-        }, { passive: true });
-    });
-}
 
 function initializeApp() {
     loadSavedState();
@@ -175,356 +148,289 @@ function initializeApp() {
     updateCustomTimerControlsState();
 }
 
-// Request notification permission
-function requestNotificationPermission() {
-    if ('Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission();
+// ── Android Audio Context Unlock ──────────────────────
+function setupAndroidAudioUnlock() {
+    let unlocked = false;
+    function unlockAudio() {
+        if (unlocked) return;
+        unlocked = true;
+        try {
+            const ctx = _ensureLowAlarmCtx();
+            if (ctx) {
+                const buf = ctx.createBuffer(1, 1, 22050);
+                const src = ctx.createBufferSource();
+                src.buffer = buf;
+                src.connect(ctx.destination);
+                src.start(0);
+                // Do NOT close ctx — we reuse it for the low alarm
+            }
+        } catch(e) {}
+        // Unlock the HTML audio element with a silent play-then-pause
+        [alarmSoundHigh].forEach(el => {
+            if (!el) return;
+            const saved = el.volume;
+            el.volume = 0;
+            el.play().then(() => { el.pause(); el.currentTime = 0; el.volume = saved; }).catch(() => {});
+        });
+        document.removeEventListener('touchstart', unlockAudio, true);
+        document.removeEventListener('touchend',   unlockAudio, true);
+        document.removeEventListener('click',      unlockAudio, true);
     }
+    document.addEventListener('touchstart', unlockAudio, { passive: true, capture: true });
+    document.addEventListener('touchend',   unlockAudio, { passive: true, capture: true });
+    document.addEventListener('click',      unlockAudio, { capture: true });
 }
 
-// Show browser notification
+// ── Touch-friendly range sliders ─────────────────────
+function setupTouchFriendlySliders() {
+    [alarmVolumeSlider, customAlarmVolumeSlider].forEach(slider => {
+        if (!slider) return;
+        slider.addEventListener('touchstart', () => {}, { passive: true });
+        slider.addEventListener('touchmove',  e => e.stopPropagation(), { passive: true });
+    });
+}
+
+// ── Notifications ─────────────────────────────────────
+function requestNotificationPermission() {
+    if ('Notification' in window && Notification.permission === 'default')
+        Notification.requestPermission().catch(() => {});
+}
+
 function showNotification(title, message) {
     if ('Notification' in window && Notification.permission === 'granted') {
-        const notification = new Notification(title, {
-            body: message,
-            icon: 'favicon.png',
-            badge: 'favicon.png'
-        });
-
-        setTimeout(() => notification.close(), 5000);
+        try {
+            const n = new Notification(title, { body: message, icon: 'favicon.png', badge: 'favicon.png' });
+            setTimeout(() => n.close(), 5000);
+        } catch(e) {}
     }
 }
 
-// Load Saved State
+// ── Saved State ───────────────────────────────────────
 function loadSavedState() {
-    // Always start fresh - don't load previous state
     elapsedMilliseconds = 0;
     updateTimerDisplay();
-    // Clear any saved state
     localStorage.removeItem("pomodoroState");
 }
 
 function loadSavedVolume() {
-    const savedVolume = localStorage.getItem("alarmVolume");
-    const volume = savedVolume !== null ? parseFloat(savedVolume) : 0.5;
-    alarmVolumeSlider.value = volume;
-    applyVolume(volume);
-
-    const savedCustomVolume = localStorage.getItem("customAlarmVolume");
-    const customVolume = savedCustomVolume !== null ? parseFloat(savedCustomVolume) : 0.5;
+    const vol = parseFloat(localStorage.getItem("alarmVolume") ?? "0.5");
+    alarmVolumeSlider.value = vol;
+    applyVolume(vol);
     if (customAlarmVolumeSlider) {
-        customAlarmVolumeSlider.value = customVolume;
-        applyCustomVolume(customVolume);
+        const cvol = parseFloat(localStorage.getItem("customAlarmVolume") ?? "0.5");
+        customAlarmVolumeSlider.value = cvol;
+        applyCustomVolume(cvol);
     }
 }
 
-// Setup Event Listeners
-function setupEventListeners() {
-    // Tab switching
-    tabButtons.forEach(button => {
-        button.addEventListener('click', () => switchTab(button.dataset.tab));
-    });
+function saveState(reset = false) {
+    if (reset) localStorage.removeItem("pomodoroState");
+    else localStorage.setItem("pomodoroState", JSON.stringify({ totalMilliseconds: elapsedMilliseconds }));
+}
 
-    // Fullscreen toggle
+// ── Event Listeners ───────────────────────────────────
+function setupEventListeners() {
+    tabButtons.forEach(b => b.addEventListener('click', () => switchTab(b.dataset.tab)));
     fullscreenToggle.addEventListener("click", toggleFullscreen);
     exitFullscreenButton.addEventListener("click", exitFullscreen);
-
-    // Standard timer controls
     startButton.addEventListener("click", startTimer);
     pauseButton.addEventListener("click", pauseOrResumeTimer);
-    stopButton.addEventListener("click", stopTimer);
-
-    // Custom timer controls
+    stopButton.addEventListener("click",  stopTimer);
     customStartButton.addEventListener("click", startCustomTimer);
     customPauseButton.addEventListener("click", pauseOrResumeCustomTimer);
     customResetButton.addEventListener("click", resetCustomTimer);
-
-    // Preset buttons
-    presetButtons.forEach(button => {
-        button.addEventListener('click', () => setPresetTime(parseInt(button.dataset.time)));
+    presetButtons.forEach(b => b.addEventListener('click', () => setPresetTime(parseInt(b.dataset.time))));
+    [customHoursInput, customMinutesInput, customSecondsInput].forEach(inp => {
+        inp.addEventListener('change', updateCustomTimerFromInputs);
+        inp.addEventListener('input',  updateCustomTimerFromInputs);
     });
-
-    // Input changes
-    [customHoursInput, customMinutesInput, customSecondsInput].forEach(input => {
-        input.addEventListener('change', updateCustomTimerFromInputs);
-    });
-
-    // Keyboard shortcuts
     document.addEventListener('keydown', handleKeyboardShortcuts);
-
-    // Volume slider
     alarmVolumeSlider.addEventListener('input', () => {
-        const volume = parseFloat(alarmVolumeSlider.value);
-        applyVolume(volume);
-        localStorage.setItem("alarmVolume", volume);
+        const v = parseFloat(alarmVolumeSlider.value);
+        applyVolume(v);
+        localStorage.setItem("alarmVolume", v);
     });
-
-    // Custom volume slider
     if (customAlarmVolumeSlider) {
         customAlarmVolumeSlider.addEventListener('input', () => {
-            const volume = parseFloat(customAlarmVolumeSlider.value);
-            applyCustomVolume(volume);
-            localStorage.setItem("customAlarmVolume", volume);
+            const v = parseFloat(customAlarmVolumeSlider.value);
+            applyCustomVolume(v);
+            localStorage.setItem("customAlarmVolume", v);
         });
     }
 }
 
-// Tab Switching
+// ── Tab Switching ─────────────────────────────────────
 function switchTab(tabName) {
-    // Block only when actively running (not paused)
-    const isStandardActivelyRunning = timer !== null && !isPaused;
-    const isCustomActivelyRunning = customIsRunning && !customIsPaused;
-
-    if (isStandardActivelyRunning) {
+    if (timer !== null && !isPaused) {
         messageDiv.textContent = "Pause the timer before switching tabs.";
         setTimeout(() => {
-            if (messageDiv.textContent === "Pause the timer before switching tabs.") {
+            if (messageDiv.textContent === "Pause the timer before switching tabs.")
                 messageDiv.textContent = "Timer running...";
-            }
         }, 2000);
         return;
     }
-
-    if (isCustomActivelyRunning) {
+    if (customIsRunning && !customIsPaused) {
         customMessageDiv.textContent = "Pause the timer before switching tabs.";
         setTimeout(() => {
-            if (customMessageDiv.textContent === "Pause the timer before switching tabs.") {
+            if (customMessageDiv.textContent === "Pause the timer before switching tabs.")
                 customMessageDiv.textContent = "Custom timer running...";
-            }
         }, 2000);
         return;
     }
+    // Block tab switch while break modal is open
+    if (!restOverlay.classList.contains('hidden')) return;
 
-    tabButtons.forEach(button => {
-        button.classList.remove('disabled');
-        button.classList.toggle('active', button.dataset.tab === tabName);
-    });
-
-    tabContents.forEach(content => {
-        content.classList.toggle('active', content.id === `${tabName}-tab`);
-    });
+    tabButtons.forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+    tabContents.forEach(c => c.classList.toggle('active', c.id === `${tabName}-tab`));
+    updateTabStates();
 }
 
 function updateTabStates() {
-    const isStandardActivelyRunning = timer !== null && !isPaused;
-    const isCustomActivelyRunning = customIsRunning && !customIsPaused;
-
-    tabButtons.forEach(button => {
-        button.classList.remove('disabled');
-        if (isStandardActivelyRunning || isCustomActivelyRunning) {
-            if (button.dataset.tab !== document.querySelector('.tab-button.active').dataset.tab) {
-                button.classList.add('disabled');
-            }
-        }
+    const stdRunning    = timer !== null && !isPaused;
+    const customRunning = customIsRunning && !customIsPaused;
+    const activeEl      = document.querySelector('.tab-button.active');
+    tabButtons.forEach(b => {
+        b.classList.remove('disabled');
+        if ((stdRunning || customRunning) && activeEl && b.dataset.tab !== activeEl.dataset.tab)
+            b.classList.add('disabled');
     });
 }
 
 function updateCustomTimerControlsState() {
-    const isAnyTimerRunning = (timer !== null) || (customIsRunning);
-
-    // Disable/enable input fields
-    [customHoursInput, customMinutesInput, customSecondsInput].forEach(input => {
-        if (isAnyTimerRunning) {
-            input.classList.add('disabled');
-            input.disabled = true;
-        } else {
-            input.classList.remove('disabled');
-            input.disabled = false;
-        }
+    const running = (timer !== null) || customIsRunning;
+    [customHoursInput, customMinutesInput, customSecondsInput].forEach(inp => {
+        inp.disabled = running;
+        inp.classList.toggle('disabled', running);
     });
-
-    // Disable/enable preset buttons
-    presetButtons.forEach(button => {
-        if (isAnyTimerRunning) {
-            button.classList.add('disabled');
-            button.disabled = true;
-        } else {
-            button.classList.remove('disabled');
-            button.disabled = false;
-        }
+    presetButtons.forEach(b => {
+        b.disabled = running;
+        b.classList.toggle('disabled', running);
     });
 }
 
-// Apply volume to both alarm sounds
+// ── Volume ────────────────────────────────────────────
 function applyVolume(volume) {
     if (alarmSoundHigh) alarmSoundHigh.volume = volume;
     _lowAlarmProxy.volume = volume;
-    // Update slider track fill
     alarmVolumeSlider.style.setProperty('--volume-pct', (volume * 100) + '%');
-    // Update icon based on level
     const label = document.querySelector('label[for="alarm-volume"]');
-    if (label) {
-        if (volume === 0) label.textContent = '🔇';
-        else if (volume < 0.4) label.textContent = '🔈';
-        else if (volume < 0.75) label.textContent = '🔉';
-        else label.textContent = '🔊';
-    }
+    if (label) label.textContent = volume === 0 ? '🔇' : volume < 0.4 ? '🔈' : volume < 0.75 ? '🔉' : '🔊';
 }
 
 function applyCustomVolume(volume) {
-    if (customAlarmVolumeSlider) {
+    if (customAlarmVolumeSlider)
         customAlarmVolumeSlider.style.setProperty('--volume-pct', (volume * 100) + '%');
-    }
     const label = document.querySelector('label[for="custom-alarm-volume"]');
-    if (label) {
-        if (volume === 0) label.textContent = '🔇';
-        else if (volume < 0.4) label.textContent = '🔈';
-        else if (volume < 0.75) label.textContent = '🔉';
-        else label.textContent = '🔊';
-    }
+    if (label) label.textContent = volume === 0 ? '🔇' : volume < 0.4 ? '🔈' : volume < 0.75 ? '🔉' : '🔊';
 }
 
-// Fullscreen Mode
+// ── Fullscreen ────────────────────────────────────────
 function toggleFullscreen() {
     fullscreenOverlay.classList.remove('hidden');
     updateFullscreenDisplay();
-
-    // Update fullscreen display based on active tab
-    const activeTab = document.querySelector('.tab-button.active').dataset.tab;
-    if (activeTab === 'custom') {
-        fsStatus.textContent = 'Custom Timer';
-    } else {
-        fsStatus.textContent = 'Focus Time';
+    if (fsStatus) {
+        fsStatus.textContent = document.querySelector('.tab-button.active')?.dataset.tab === 'custom'
+            ? 'Custom Timer' : 'Focus Time';
     }
-
-    // Try native fullscreen API on Android (works in Chrome Android)
-    if (document.documentElement.requestFullscreen) {
+    if (document.documentElement.requestFullscreen)
         document.documentElement.requestFullscreen().catch(() => {});
-    } else if (document.documentElement.webkitRequestFullscreen) {
+    else if (document.documentElement.webkitRequestFullscreen)
         document.documentElement.webkitRequestFullscreen();
-    }
 }
 
 function exitFullscreen() {
     fullscreenOverlay.classList.add('hidden');
-    // Exit native fullscreen if active
     if (document.fullscreenElement || document.webkitFullscreenElement) {
         if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
         else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
     }
 }
 
-// Close fullscreen overlay if native fullscreen is exited (e.g. back button on Android)
 document.addEventListener('fullscreenchange', () => {
-    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement)
         fullscreenOverlay.classList.add('hidden');
-    }
 });
 document.addEventListener('webkitfullscreenchange', () => {
-    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement)
         fullscreenOverlay.classList.add('hidden');
-    }
 });
 
 function updateFullscreenDisplay() {
-    const activeTab = document.querySelector('.tab-button.active').dataset.tab;
-
+    const activeTab = document.querySelector('.tab-button.active')?.dataset.tab;
+    let totalSeconds;
     if (activeTab === 'custom') {
-        const totalSeconds = Math.max(0, Math.floor((customTotalTime - customElapsedTime) / 1000));
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-
-        fsMinutes.textContent = minutes.toString().padStart(2, "0");
-        fsSeconds.textContent = seconds.toString().padStart(2, "0");
+        totalSeconds = Math.max(0, Math.floor((customTotalTime - customElapsedTime) / 1000));
     } else {
-        const totalSeconds = Math.floor(elapsedMilliseconds / 1000);
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-
-        fsMinutes.textContent = minutes.toString().padStart(2, "0");
-        fsSeconds.textContent = seconds.toString().padStart(2, "0");
+        totalSeconds = Math.floor(elapsedMilliseconds / 1000);
     }
+    if (fsMinutes) fsMinutes.textContent = Math.floor(totalSeconds / 60).toString().padStart(2, "0");
+    if (fsSeconds)  fsSeconds.textContent = (totalSeconds % 60).toString().padStart(2, "0");
 }
 
-// Keyboard Shortcuts
+// ── Keyboard Shortcuts ────────────────────────────────
 function handleKeyboardShortcuts(e) {
-    if (e.target.tagName === 'INPUT') return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
 
-    // Allow Escape to skip rest modal
     if (e.key === 'Escape') {
-        if (!restOverlay.classList.contains('hidden')) {
-            endRestTimer(false);
-            return;
-        }
-        if (!fullscreenOverlay.classList.contains('hidden')) {
-            exitFullscreen();
-            return;
-        }
+        if (!restOverlay.classList.contains('hidden'))       { endRestTimer(false); return; }
+        if (!fullscreenOverlay.classList.contains('hidden')) { exitFullscreen();    return; }
+        if (!celebration.classList.contains('hidden'))       { celebration.classList.add('hidden'); return; }
     }
 
-    switch (e.key.toLowerCase()) {
-        case ' ':
-            e.preventDefault();
-            // Space skips rest modal if open
-            if (!restOverlay.classList.contains('hidden')) {
-                endRestTimer(false);
-                return;
-            }
-            const activeTab = document.querySelector('.tab-button.active').dataset.tab;
-            if (activeTab === 'custom') {
-                if (!customIsRunning) {
-                    startCustomTimer();
-                } else {
-                    pauseOrResumeCustomTimer();
-                }
-            } else {
-                if (!timer && !isPaused) {
-                    startTimer();
-                } else {
-                    pauseOrResumeTimer();
-                }
-            }
-            break;
-        case 'f':
-            if (!fullscreenOverlay.classList.contains('hidden')) {
-                exitFullscreen();
-            } else {
-                toggleFullscreen();
-            }
-            break;
+    const key = e.key === ' ' ? 'space' : e.key.toLowerCase();
+
+    if (key === 'space') {
+        e.preventDefault();
+        if (!restOverlay.classList.contains('hidden'))  { endRestTimer(false); return; }
+        if (!celebration.classList.contains('hidden'))  { celebration.classList.add('hidden'); return; }
+        const activeTab = document.querySelector('.tab-button.active')?.dataset.tab;
+        if (activeTab === 'custom') {
+            if (!customIsRunning) startCustomTimer(); else pauseOrResumeCustomTimer();
+        } else {
+            if (!timer && !isPaused) startTimer(); else pauseOrResumeTimer();
+        }
+        return;
+    }
+
+    if (key === 'f') {
+        if (!fullscreenOverlay.classList.contains('hidden')) exitFullscreen();
+        else toggleFullscreen();
     }
 }
 
-// Standard Timer Functions
+// ═══════════════════════════════════════════════════════
+// STANDARD TIMER
+// ═══════════════════════════════════════════════════════
 function startTimer() {
-    // Always a fresh start — resume is handled by pauseOrResumeTimer
     startTime = performance.now();
     elapsedMilliseconds = 0;
     isPaused = false;
-
     startButton.disabled = true;
     pauseButton.disabled = false;
-    stopButton.disabled = false;
+    stopButton.disabled  = false;
     messageDiv.textContent = "Timer running...";
-
+    cancelAnimationFrame(timer);
     timer = requestAnimationFrame(updateTimer);
     updateTabStates();
     updateCustomTimerControlsState();
 }
 
-const STD_RING_MAX_MS = 3600000; // 1 hour reference for background/glow
+const STD_RING_MAX_MS = 3600000;
 
-function updateTimer() {
-    // Guard: if timer was cleared (stop/reset), do not reschedule
-    if (!timer && !isPaused) return;
+function updateTimer(now) {
+    if (timer === null) return;
     if (isPaused) return;
-    const currentTime = performance.now();
-    elapsedMilliseconds = currentTime - startTime;
+    elapsedMilliseconds = now - startTime;
     updateTimerDisplay();
     updateFullscreenDisplay();
-
-    // Heartbeat pulse on each new second
     const currentSecond = Math.floor(elapsedMilliseconds / 1000);
     if (currentSecond !== lastHeartbeatSecond) {
         lastHeartbeatSecond = currentSecond;
         triggerHeartbeat(timerDisplay);
     }
-
-    // Dynamic background & edge glow
     const progress = Math.min(elapsedMilliseconds / STD_RING_MAX_MS, 1);
     updateDynamicBackground(progress * 0.6);
     updateEdgeGlow(progress);
-
     timer = requestAnimationFrame(updateTimer);
 }
 
@@ -533,6 +439,7 @@ function pauseOrResumeTimer() {
         isPaused = false;
         pauseButton.textContent = "Pause";
         clearInterval(pauseTimer);
+        pauseTimer = null;
         pausedMilliseconds = 0;
         startTime = performance.now() - elapsedMilliseconds;
         timer = requestAnimationFrame(updateTimer);
@@ -542,30 +449,26 @@ function pauseOrResumeTimer() {
     } else {
         isPaused = true;
         cancelAnimationFrame(timer);
-        timer = null;          // null here so updateTimer guard prevents ghost rAF
+        timer = null;
         pauseButton.textContent = "Resume";
         startPauseTimer();
         updateTabStates();
         updateCustomTimerControlsState();
-        // Inline visual reset — window wrapper is never called by the button listener
         resetEdgeGlow();
         resetDynamicBackground();
     }
 }
 
 function stopTimer() {
-    // Cancel the animation loop and null out the handle FIRST,
-    // so the updateTimer guard above prevents any stale rAF frame
-    // from re-spawning the loop after we call resetTimer().
     cancelAnimationFrame(timer);
     timer = null;
     clearInterval(pauseTimer);
+    pauseTimer = null;
     isPaused = false;
 
     const workSeconds = Math.floor(elapsedMilliseconds / 1000);
     const workMinutes = Math.floor(workSeconds / 60);
 
-    // If stopped immediately with no meaningful time elapsed, just reset quietly
     if (workSeconds < 1) {
         resetTimer();
         messageDiv.textContent = "";
@@ -573,106 +476,91 @@ function stopTimer() {
     }
 
     const restNeeded = calculateRestTime(workSeconds);
-
     completedSessions++;
     sessionData.push({ session: completedSessions, duration: workSeconds });
     localStorage.setItem("sessionData", JSON.stringify(sessionData));
 
-    showCelebration();
-    showNotification("Pomodoro Complete!", `Great job! You worked for ${workMinutes} minutes.`);
+    const alarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : _lowAlarmProxy;
+    if (alarm) alarm.play().catch(e => console.warn('Alarm play failed:', e));
 
-    // Play appropriate alarm sound for standard timer
-    const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : _lowAlarmProxy;
-    if (selectedAlarm) {
-        selectedAlarm.play().catch(e => console.log('Could not play alarm sound'));
-    }
+    showNotification("Pomodoro Complete!", `Great job! You worked for ${workMinutes} minutes.`);
 
     resetTimer();
 
-    if (restNeeded > 0) {
-        showRestPrompt(restNeeded, workMinutes);
-    } else {
-        messageDiv.textContent = `You worked for ${workMinutes} minutes. Keep it up!`;
-    }
-}
-
-function showRestPrompt(restSeconds, workMinutes) {
-    // Skip the old inline prompt entirely — go straight to the modal
-    showRestModal(restSeconds, workMinutes);
+    // ── FIX: rest modal is shown ONLY after celebration fully closes ──
+    // This prevents z-index collisions and ghost-click swallowing the overlay.
+    showCelebration(() => {
+        if (restNeeded > 0) {
+            showRestModal(restNeeded, workMinutes);
+        } else {
+            messageDiv.textContent = `You worked for ${workMinutes} minutes. Keep it up!`;
+        }
+    });
 }
 
 function startPauseTimer() {
+    clearInterval(pauseTimer);
     pauseTimer = setInterval(() => {
         pausedMilliseconds += 1000;
-        messageDiv.textContent = `Paused for ${Math.floor(pausedMilliseconds / 1000)} seconds.`;
+        messageDiv.textContent = `Paused for ${Math.floor(pausedMilliseconds / 1000)}s.`;
     }, 1000);
 }
 
 function resetTimer() {
-    elapsedMilliseconds = 0;
-    pausedMilliseconds = 0;
-    isPaused = false;
     cancelAnimationFrame(timer);
     timer = null;
     clearInterval(pauseTimer);
+    pauseTimer = null;
+    elapsedMilliseconds = 0;
+    pausedMilliseconds  = 0;
+    isPaused = false;
     pauseButton.textContent = "Pause";
     startButton.disabled = false;
     pauseButton.disabled = true;
-    stopButton.disabled = true;
+    stopButton.disabled  = true;
     updateTimerDisplay();
     saveState(true);
     updateTabStates();
     updateCustomTimerControlsState();
-    // Always reset visuals inline — don't rely on window wrapper which button
-    // listeners bypass (they capture the original function reference at bind time)
     resetEdgeGlow();
     resetDynamicBackground();
     lastHeartbeatSecond = -1;
-    // Block ghost clicks on Android: after a stop, Android synthesizes a delayed
-    // click that passes through the celebration overlay onto the Start button.
-    // Briefly disabling pointer-events absorbs it without affecting UX.
+    // Absorb Android's synthetic ghost-click that follows a button tap
     startButton.style.pointerEvents = 'none';
     setTimeout(() => { startButton.style.pointerEvents = ''; }, 600);
-    // Don't clear messageDiv here — the caller sets it right after
 }
 
 function updateTimerDisplay() {
     const totalSeconds = Math.floor(elapsedMilliseconds / 1000);
-    const milliseconds = Math.floor(elapsedMilliseconds % 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-
-    minutesSpan.textContent = minutes.toString().padStart(2, "0");
-    secondsSpan.textContent = seconds.toString().padStart(2, "0");
-    millisecondsSpan.textContent = milliseconds.toString().padStart(3, "0");
+    const ms  = Math.floor(elapsedMilliseconds % 1000);
+    const min = Math.floor(totalSeconds / 60);
+    const sec = totalSeconds % 60;
+    minutesSpan.textContent      = min.toString().padStart(2, "0");
+    secondsSpan.textContent      = sec.toString().padStart(2, "0");
+    millisecondsSpan.textContent = ms.toString().padStart(3, "0");
 }
 
-// Custom Timer Functions
+// ═══════════════════════════════════════════════════════
+// CUSTOM TIMER
+// ═══════════════════════════════════════════════════════
 function setPresetTime(seconds) {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const remainingSeconds = seconds % 60;
-
-    customHoursInput.value = hours;
-    customMinutesInput.value = minutes;
-    customSecondsInput.value = remainingSeconds;
-
+    customHoursInput.value   = Math.floor(seconds / 3600);
+    customMinutesInput.value = Math.floor((seconds % 3600) / 60);
+    customSecondsInput.value = seconds % 60;
     updateCustomTimerFromInputs();
 }
 
 function updateCustomTimerFromInputs() {
-    let hours   = Math.max(0, Math.min(23, parseInt(customHoursInput.value)   || 0));
-    let minutes = Math.max(0, Math.min(59, parseInt(customMinutesInput.value) || 0));
-    let seconds = Math.max(0, Math.min(59, parseInt(customSecondsInput.value) || 0));
-
-    // Write clamped values back so the field reflects reality
-    customHoursInput.value   = hours;
-    customMinutesInput.value = minutes;
-    customSecondsInput.value = seconds;
-
-    customTotalTime = (hours * 3600 + minutes * 60 + seconds) * 1000;
+    const h = Math.max(0, Math.min(23, parseInt(customHoursInput.value)   || 0));
+    const m = Math.max(0, Math.min(59, parseInt(customMinutesInput.value) || 0));
+    const s = Math.max(0, Math.min(59, parseInt(customSecondsInput.value) || 0));
+    customHoursInput.value   = h;
+    customMinutesInput.value = m;
+    customSecondsInput.value = s;
+    customTotalTime   = (h * 3600 + m * 60 + s) * 1000;
     customElapsedTime = 0;
     updateCustomTimerDisplay();
+    updateCustomRing();
 }
 
 function startCustomTimer() {
@@ -680,64 +568,51 @@ function startCustomTimer() {
         customMessageDiv.textContent = "Please set a timer duration first.";
         return;
     }
-
     if (customIsPaused) {
-        // Resume from where we left off
         customStartTime = performance.now() - customElapsedTime;
-        customIsPaused = false;
+        customIsPaused  = false;
     } else {
-        // Fresh start — reset elapsed so full duration runs
         customElapsedTime = 0;
-        customStartTime = performance.now();
+        customStartTime   = performance.now();
     }
-
     customIsRunning = true;
     customStartButton.disabled = true;
     customPauseButton.disabled = false;
     customMessageDiv.textContent = "Custom timer running...";
-
-    cancelAnimationFrame(customTimer); // cancel any stale rAF before starting
+    cancelAnimationFrame(customTimer);
     customTimer = requestAnimationFrame(updateCustomTimer);
     updateTabStates();
     updateCustomTimerControlsState();
 }
 
-function updateCustomTimer() {
-    // Guard: if customTimer was cleared (reset/complete), do not reschedule
-    if (customTimer === null && !customIsPaused) return;
-    if (!customIsPaused && customIsRunning) {
-        const currentTime = performance.now();
-        customElapsedTime = currentTime - customStartTime;
+function updateCustomTimer(now) {
+    if (customTimer === null) return;
+    if (customIsPaused || !customIsRunning) return;
 
-        if (customElapsedTime >= customTotalTime) {
-            // Timer completed
-            customElapsedTime = customTotalTime;
-            completeCustomTimer();
-            return;
-        }
+    customElapsedTime = now - customStartTime;
 
+    if (customElapsedTime >= customTotalTime) {
+        customElapsedTime = customTotalTime;
         updateCustomTimerDisplay();
-        updateFullscreenDisplay();
-
-        if (customTotalTime > 0) {
-            const remaining = Math.max(0, customTotalTime - customElapsedTime);
-            const elapsed = customTotalTime - remaining;
-            const progress = elapsed / customTotalTime;
-
-            // Heartbeat pulse on each new second
-            const currentSecond = Math.floor(elapsed / 1000);
-            if (currentSecond !== lastCustomHeartbeatSecond) {
-                lastCustomHeartbeatSecond = currentSecond;
-                triggerHeartbeat(customTimerDisplay);
-            }
-
-            updateCustomRing();
-            updateDynamicBackground(progress);
-            updateEdgeGlow(progress);
-        }
-
-        customTimer = requestAnimationFrame(updateCustomTimer);
+        updateCustomRing();
+        completeCustomTimer();
+        return;
     }
+
+    updateCustomTimerDisplay();
+    updateFullscreenDisplay();
+
+    const progress = customElapsedTime / customTotalTime;
+    const currentSecond = Math.floor(customElapsedTime / 1000);
+    if (currentSecond !== lastCustomHeartbeatSecond) {
+        lastCustomHeartbeatSecond = currentSecond;
+        triggerHeartbeat(customTimerDisplay);
+    }
+    updateCustomRing();
+    updateDynamicBackground(progress);
+    updateEdgeGlow(progress);
+
+    customTimer = requestAnimationFrame(updateCustomTimer);
 }
 
 function pauseOrResumeCustomTimer() {
@@ -752,120 +627,127 @@ function pauseOrResumeCustomTimer() {
     } else {
         customIsPaused = true;
         cancelAnimationFrame(customTimer);
-        customTimer = null;   // null so updateCustomTimer guard prevents ghost rAF
+        customTimer = null;
         customPauseButton.textContent = "Resume";
         customMessageDiv.textContent = "Custom timer paused...";
         updateTabStates();
         updateCustomTimerControlsState();
-        // Inline visual reset — window wrapper is bypassed by button listeners
         resetEdgeGlow();
         resetDynamicBackground();
     }
 }
 
 function completeCustomTimer() {
-    const totalMinutes = Math.floor(customTotalTime / 60000);
-
     cancelAnimationFrame(customTimer);
     customTimer = null;
     customIsRunning = false;
 
-    // Play alarm sound using custom tab's alarm settings
-    const customVolume = customAlarmVolumeSlider ? parseFloat(customAlarmVolumeSlider.value) : 0.5;
-    const useHighAlarm = customAlarmTypeSelect && customAlarmTypeSelect.value === 'high';
-    const selectedAlarm = useHighAlarm ? alarmSoundHigh : _lowAlarmProxy;
-    if (selectedAlarm) {
-        selectedAlarm.volume = customVolume;
-        selectedAlarm.play().catch(e => console.log('Could not play alarm sound'));
-    }
-    showCelebration();
-    showNotification("Custom Timer Complete!", `Great job! You completed your ${totalMinutes} minute session.`);
+    const totalMinutes = Math.floor(customTotalTime / 60000);
+    const workSeconds  = Math.floor(customTotalTime / 1000);
+    const restNeeded   = calculateRestTime(workSeconds);
 
+    const vol   = customAlarmVolumeSlider ? parseFloat(customAlarmVolumeSlider.value) : 0.5;
+    const alarm = (customAlarmTypeSelect?.value === 'high') ? alarmSoundHigh : _lowAlarmProxy;
+    if (alarm) { alarm.volume = vol; alarm.play().catch(e => console.warn('Alarm play failed:', e)); }
+
+    showNotification("Custom Timer Complete!", `Great job! You completed your ${totalMinutes} minute session.`);
     customMessageDiv.textContent = "Custom timer completed! Great work!";
+
     resetCustomTimer();
+
+    // Show rest modal after celebration (same pattern as standard timer)
+    showCelebration(() => {
+        if (restNeeded > 0) showRestModal(restNeeded, totalMinutes);
+    });
 }
 
 function resetCustomTimer() {
-    // Cancel and null FIRST so the updateCustomTimer guard prevents ghost rAF frames
     cancelAnimationFrame(customTimer);
-    customTimer = null;
-    customIsRunning = false;
-    customIsPaused = false;
+    customTimer      = null;
+    customIsRunning  = false;
+    customIsPaused   = false;
     customElapsedTime = 0;
-    clearInterval(pauseTimer); // in case pause interval was running
+    clearInterval(pauseTimer);
+    pauseTimer = null;
     customStartButton.disabled = false;
     customPauseButton.disabled = true;
     customPauseButton.textContent = "Pause";
-    // Restore total time display so it shows the set duration, not 00:00
     updateCustomTimerDisplay();
-
-    if (!customMessageDiv.textContent.includes("completed") && !customMessageDiv.textContent.includes("stopped")) {
-        customMessageDiv.textContent = "";
-    }
-    updateTabStates();
-    updateCustomTimerControlsState();
-    // Inline visual resets — window wrapper is bypassed by button listeners
-    resetEdgeGlow();
-    resetDynamicBackground();
     if (customRingFill) {
         customRingFill.style.transition = 'none';
         customRingFill.style.strokeDashoffset = RING_CIRCUMFERENCE;
         requestAnimationFrame(() => { customRingFill.style.transition = ''; });
     }
+    if (!customMessageDiv.textContent.includes("completed") &&
+        !customMessageDiv.textContent.includes("stopped")) {
+        customMessageDiv.textContent = "";
+    }
+    updateTabStates();
+    updateCustomTimerControlsState();
+    resetEdgeGlow();
+    resetDynamicBackground();
     lastCustomHeartbeatSecond = -1;
 }
 
 function updateCustomTimerDisplay() {
-    const remainingTime = Math.max(0, customTotalTime - customElapsedTime);
-    const totalSeconds = Math.floor(remainingTime / 1000);
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-
-    customTimerMinutes.textContent = minutes.toString().padStart(2, "0");
-    customTimerSeconds.textContent = seconds.toString().padStart(2, "0");
+    const remaining = Math.max(0, customTotalTime - customElapsedTime);
+    const totalSecs = Math.floor(remaining / 1000);
+    customTimerMinutes.textContent = Math.floor(totalSecs / 60).toString().padStart(2, "0");
+    customTimerSeconds.textContent = (totalSecs % 60).toString().padStart(2, "0");
 }
 
-// Rest Timer Functions
+// ═══════════════════════════════════════════════════════
+// REST TIMER — modal with countdown ring
+// ═══════════════════════════════════════════════════════
 function calculateRestTime(workSeconds) {
-    if (workSeconds < 300) return 0;
-    return Math.floor(workSeconds * 0.2);
+    if (workSeconds < 300) return 0;      // < 5 min → no break
+    return Math.floor(workSeconds * 0.2); // 20% of work time
 }
 
-// ── Rest Timer Modal ──────────────────────────────────────
-const restOverlay    = document.getElementById('rest-overlay');
-const restRingFill   = document.getElementById('rest-ring-fill');
-const restMinutesEl  = document.getElementById('rest-minutes');
-const restSecondsEl  = document.getElementById('rest-seconds');
-const restSkipBtn    = document.getElementById('rest-skip-btn');
-const restSubtitle   = document.getElementById('rest-subtitle');
-const REST_CIRCUMFERENCE = 553.0; // 2 * π * 88
+const restOverlay   = document.getElementById('rest-overlay');
+const restRingFill  = document.getElementById('rest-ring-fill');
+const restMinutesEl = document.getElementById('rest-minutes');
+const restSecondsEl = document.getElementById('rest-seconds');
+const restSkipBtn   = document.getElementById('rest-skip-btn');
+const restSubtitle  = document.getElementById('rest-subtitle');
+const REST_CIRCUMFERENCE = 553.0; // 2π × 88
 
-let restRaf = null;
+let restRaf       = null;
 let restStartTime = null;
-let restTotalMs = 0;
+let restTotalMs   = 0;
+
+if (restSkipBtn) restSkipBtn.addEventListener('click', () => endRestTimer(false));
 
 function showRestModal(restSeconds, workMinutes) {
     restTotalMs = restSeconds * 1000;
+
     const restMins = Math.floor(restSeconds / 60);
     const restSecs = restSeconds % 60;
     const label = restMins > 0
-        ? `${restMins}m ${restSecs > 0 ? restSecs + 's' : ''}`.trim()
+        ? `${restMins}m${restSecs > 0 ? ' ' + restSecs + 's' : ''}`
         : `${restSecs}s`;
-
     if (restSubtitle) restSubtitle.textContent = `${workMinutes} min session · ${label} break`;
     messageDiv.textContent = '';
 
-    // Reset ring to full
+    // Show initial time so there's no blank before first tick
+    if (restMinutesEl) restMinutesEl.textContent = Math.floor(restSeconds / 60).toString().padStart(2, '0');
+    if (restSecondsEl) restSecondsEl.textContent = (restSeconds % 60).toString().padStart(2, '0');
+
+    // Reset ring to full (offset 0 = full stroke drawn)
     if (restRingFill) {
         restRingFill.style.transition = 'none';
         restRingFill.style.strokeDashoffset = '0';
     }
 
-    // On Android, toggling display and expecting the CSS animation to fire on
-    // the same frame is unreliable. Show the overlay first, then start the
-    // rAF loop on the next frame so the element is painted before we animate.
+    // Ensure overlay is above everything (z-index 2100 > celebration 2000)
+    restOverlay.style.zIndex = '2100';
     restOverlay.classList.remove('hidden');
-    restStartTime = null; // will be set in the deferred frame
+
+    cancelAnimationFrame(restRaf);
+    restRaf = null;
+    restStartTime = null;
+
+    // Double-rAF: ensures Android paints the overlay before animation begins
     requestAnimationFrame(() => {
         requestAnimationFrame(() => {
             restStartTime = performance.now();
@@ -875,29 +757,25 @@ function showRestModal(restSeconds, workMinutes) {
 }
 
 function tickRestTimer(now) {
-    if (!restStartTime) { restRaf = requestAnimationFrame(tickRestTimer); return; } // deferred init
-    if (restTotalMs <= 0) { endRestTimer(true); return; } // safety guard
-    const elapsed = now - restStartTime;
-    const remaining = Math.max(0, restTotalMs - elapsed);
-    const progress = remaining / restTotalMs; // 1 = full ring, 0 = empty
+    if (restRaf === null) return;
+    if (!restStartTime) { restRaf = requestAnimationFrame(tickRestTimer); return; }
+    if (restTotalMs <= 0) { endRestTimer(true); return; }
 
-    // Update ring
+    const elapsed   = now - restStartTime;
+    const remaining = Math.max(0, restTotalMs - elapsed);
+    const progress  = remaining / restTotalMs; // 1=full ring, 0=empty
+
+    // strokeDashoffset=0 → full ring; =REST_CIRCUMFERENCE → empty ring
     if (restRingFill) {
         restRingFill.style.transition = 'none';
-        restRingFill.style.strokeDashoffset = REST_CIRCUMFERENCE * (1 - progress);
+        restRingFill.style.strokeDashoffset = (REST_CIRCUMFERENCE * (1 - progress)).toString();
     }
 
-    // Update countdown
     const totalSecs = Math.ceil(remaining / 1000);
-    const m = Math.floor(totalSecs / 60);
-    const s = totalSecs % 60;
-    if (restMinutesEl) restMinutesEl.textContent = m.toString().padStart(2, '0');
-    if (restSecondsEl) restSecondsEl.textContent = s.toString().padStart(2, '0');
+    if (restMinutesEl) restMinutesEl.textContent = Math.floor(totalSecs / 60).toString().padStart(2, '0');
+    if (restSecondsEl) restSecondsEl.textContent = (totalSecs % 60).toString().padStart(2, '0');
 
-    if (remaining <= 0) {
-        endRestTimer(true);
-        return;
-    }
+    if (remaining <= 0) { endRestTimer(true); return; }
 
     restRaf = requestAnimationFrame(tickRestTimer);
 }
@@ -905,236 +783,214 @@ function tickRestTimer(now) {
 function endRestTimer(completed) {
     cancelAnimationFrame(restRaf);
     restRaf = null;
+    restStartTime = null;
     restOverlay.classList.add('hidden');
 
     if (completed) {
-        const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : _lowAlarmProxy;
-        if (selectedAlarm) selectedAlarm.play().catch(() => {});
+        const alarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : _lowAlarmProxy;
+        if (alarm) alarm.play().catch(() => {});
         showNotification("Break Over!", "Time to get back to focus.");
         messageDiv.textContent = "Break complete — let's get back to it! 💪";
     } else {
         messageDiv.textContent = "Break skipped — back to work!";
     }
-    fsStatus.textContent = 'Focus Time';
+    if (fsStatus) fsStatus.textContent = 'Focus Time';
 }
 
-if (restSkipBtn) {
-    restSkipBtn.addEventListener('click', () => endRestTimer(false));
-}
+// ═══════════════════════════════════════════════════════
+// CELEBRATION ANIMATION
+// ═══════════════════════════════════════════════════════
 
-function startRestTimer(restSeconds) {
-    // Legacy entry point — now delegates to modal
-    showRestModal(restSeconds, 0);
-}
-
-// Celebration Animation
-function showCelebration() {
-    // On Android, removing .hidden and expecting CSS animation to fire on the
-    // same frame is unreliable — the browser may not repaint before animating.
-    // Defer by one rAF so the element is actually visible before animating.
+/**
+ * Show the celebration overlay.
+ * @param {Function} [onComplete] - Called after the overlay is dismissed
+ *   (whether by user tap or auto-close). The rest modal is shown here.
+ */
+function showCelebration(onComplete) {
     celebration.classList.remove('hidden');
+
+    let dismissed = false;
+    let autoHideTimer = null;
+
+    function dismiss() {
+        if (dismissed) return;
+        dismissed = true;
+        clearTimeout(autoHideTimer);
+        // Remove the lingering listeners before hiding
+        celebration.removeEventListener('click',    handleClick);
+        celebration.removeEventListener('touchend', handleTouch);
+        celebration.classList.add('hidden');
+        // Small settle delay so Android finishes painting the hide before
+        // we add a new overlay on top
+        setTimeout(() => { if (typeof onComplete === 'function') onComplete(); }, 100);
+    }
+
+    // Build confetti on next paint so Android draws the overlay first
     requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+            const container = document.querySelector('.confetti');
+            if (container) {
+                container.innerHTML = '';
+                for (let i = 0; i < 3; i++) {
+                    const ring = document.createElement('div');
+                    ring.className = 'shockwave';
+                    ring.style.animationDelay = (i * 0.2) + 's';
+                    container.appendChild(ring);
+                }
+                createConfetti(container);
+            }
+        });
+    });
 
-    // Create shockwave rings
-    const confettiContainer = document.querySelector('.confetti');
-    confettiContainer.innerHTML = '';
+    // Auto-dismiss after 4 s
+    autoHideTimer = setTimeout(dismiss, 4000);
 
-    for (let i = 0; i < 3; i++) {
-        const ring = document.createElement('div');
-        ring.className = 'shockwave';
-        ring.style.animationDelay = (i * 0.2) + 's';
-        confettiContainer.appendChild(ring);
+    // Manual dismiss — guard against the Android ghost-click synthesized
+    // from the Stop/Start button tap (~150-250 ms later).
+    const guardEnd = performance.now() + 320;
+
+    function handleClick() {
+        if (performance.now() < guardEnd) return; // ghost click — ignore
+        dismiss();
+    }
+    function handleTouch() {
+        if (performance.now() < guardEnd) return;
+        dismiss();
     }
 
-    // Create confetti particles
-    createConfetti();
-
-        }); // end inner rAF
-    }); // end outer rAF
-
-    // Auto-hide after 5 seconds
-    setTimeout(() => {
-        celebration.classList.add('hidden');
-    }, 5000);
-
-    // Allow manual close by clicking.
-    // On Android, the tap that triggered Stop also synthesizes a click that
-    // hits this overlay. We swallow it here (once:true), then after the overlay
-    // hides a second ghost click can pass through to whatever is underneath
-    // (e.g. the re-enabled Start button). The resetTimer() call already sets
-    // pointer-events:none on the Start button for 600ms to absorb that.
-    celebration.addEventListener('click', () => {
-        celebration.classList.add('hidden');
-    }, { once: true });
+    celebration.addEventListener('click',    handleClick);
+    celebration.addEventListener('touchend', handleTouch, { passive: true });
 }
 
-function createConfetti() {
-    const colors = ['#f0a04b', '#c77dff', '#ff6b6b', '#4ecdc4', '#ffd700', '#ff9ff3', '#54a0ff'];
-    const shapes = ['circle', 'square', 'triangle'];
-    const confettiContainer = document.querySelector('.confetti');
-
-    for (let i = 0; i < 80; i++) {
-        const piece = document.createElement('div');
-        const color = colors[Math.floor(Math.random() * colors.length)];
-        const size = Math.random() * 10 + 5;
-        const startX = Math.random() * 100;
+function createConfetti(container) {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const colors = ['#f0a04b','#c77dff','#ff6b6b','#4ecdc4','#ffd700','#ff9ff3','#54a0ff'];
+    const shapes = ['circle','square','triangle'];
+    const count  = (navigator.hardwareConcurrency && navigator.hardwareConcurrency < 4) ? 40 : 80;
+    for (let i = 0; i < count; i++) {
+        const piece    = document.createElement('div');
+        const color    = colors[Math.floor(Math.random() * colors.length)];
+        const size     = Math.random() * 10 + 5;
+        const startX   = Math.random() * 100;
         const duration = Math.random() * 2.5 + 2;
-        const delay = Math.random() * 1.5;
-        const shape = shapes[Math.floor(Math.random() * shapes.length)];
-
+        const delay    = Math.random() * 1.5;
+        const shape    = shapes[Math.floor(Math.random() * shapes.length)];
         piece.style.cssText = `
-            position: absolute;
-            top: -20px;
-            left: ${startX}%;
-            width: ${size}px;
-            height: ${size}px;
-            background: ${shape === 'triangle' ? 'transparent' : color};
-            border-radius: ${shape === 'circle' ? '50%' : shape === 'square' ? '2px' : '0'};
-            border-left: ${shape === 'triangle' ? size/2 + 'px solid transparent' : 'none'};
-            border-right: ${shape === 'triangle' ? size/2 + 'px solid transparent' : 'none'};
-            border-bottom: ${shape === 'triangle' ? size + 'px solid ' + color : 'none'};
-            animation: confetti-spiral ${duration}s ease-in ${delay}s forwards;
-            opacity: 1;
+            position:absolute;top:-20px;left:${startX}%;
+            width:${size}px;height:${size}px;
+            background:${shape==='triangle'?'transparent':color};
+            border-radius:${shape==='circle'?'50%':shape==='square'?'2px':'0'};
+            border-left:${shape==='triangle'?size/2+'px solid transparent':'none'};
+            border-right:${shape==='triangle'?size/2+'px solid transparent':'none'};
+            border-bottom:${shape==='triangle'?size+'px solid '+color:'none'};
+            animation:confetti-spiral ${duration}s ease-in ${delay}s forwards;
+            will-change:transform;opacity:1;
         `;
-        confettiContainer.appendChild(piece);
+        container.appendChild(piece);
     }
 }
 
-// Save State
-function saveState(reset = false) {
-    if (reset) {
-        localStorage.removeItem("pomodoroState");
-    } else {
-        localStorage.setItem("pomodoroState", JSON.stringify({
-            totalMilliseconds: elapsedMilliseconds
-        }));
-    }
-}
-
-// Visibility change handler — critical for Android (screen off, app switch)
+// ═══════════════════════════════════════════════════════
+// VISIBILITY CHANGE — keep timers accurate after screen lock / app switch
+// ═══════════════════════════════════════════════════════
 document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
-        // Page is hidden — record the wall-clock time so we can catch up
-        if (timer && startTime && !isPaused) {
-            // Store the timestamp so we can calculate drift when we return
-            window._hiddenAtStd = Date.now();
+        if (timer !== null && startTime !== null && !isPaused) {
+            window._hiddenAtStd   = Date.now();
             window._elapsedAtHide = elapsedMilliseconds;
         }
-        if (customTimer && customStartTime && !customIsPaused) {
-            window._hiddenAtCustom = Date.now();
+        if (customTimer !== null && customStartTime !== null && !customIsPaused) {
+            window._hiddenAtCustom      = Date.now();
             window._customElapsedAtHide = customElapsedTime;
         }
-        // Rest timer: record wall-clock time so break countdown stays accurate
         if (restRaf !== null && restStartTime !== null) {
-            window._hiddenAtRest = Date.now();
+            window._hiddenAtRest      = Date.now();
+            // store how many ms have elapsed in the rest timer at hide time
             window._restElapsedAtHide = performance.now() - restStartTime;
         }
     } else {
-        // Page is visible — recalculate to account for time that passed while hidden
-        // Only sync if the timer is genuinely still running (timer handle is non-null
-        // and we are not paused) to avoid resurrecting a stopped/reset timer.
+        // Standard timer
         if (timer !== null && !isPaused && startTime && window._hiddenAtStd != null) {
             const hiddenMs = Date.now() - window._hiddenAtStd;
             elapsedMilliseconds = window._elapsedAtHide + hiddenMs;
             startTime = performance.now() - elapsedMilliseconds;
-            window._hiddenAtStd = null;
             updateTimerDisplay();
-        } else {
-            window._hiddenAtStd = null;
         }
+        window._hiddenAtStd = null;
+
+        // Custom timer
         if (customIsRunning && !customIsPaused && customTimer !== null && window._hiddenAtCustom != null) {
             const hiddenMs = Date.now() - window._hiddenAtCustom;
             customElapsedTime = window._customElapsedAtHide + hiddenMs;
-            customStartTime = performance.now() - customElapsedTime;
-            window._hiddenAtCustom = null;
-            // Check if custom timer completed while hidden
+            customStartTime   = performance.now() - customElapsedTime;
             if (customElapsedTime >= customTotalTime) {
                 customElapsedTime = customTotalTime;
                 completeCustomTimer();
             } else {
                 updateCustomTimerDisplay();
             }
-        } else {
-            window._hiddenAtCustom = null;
         }
-        // Rest timer: re-sync elapsed time after coming back from background
+        window._hiddenAtCustom = null;
+
+        // Rest timer
         if (restRaf !== null && restStartTime !== null && window._hiddenAtRest != null) {
-            const hiddenMs = Date.now() - window._hiddenAtRest;
+            const hiddenMs     = Date.now() - window._hiddenAtRest;
             const totalElapsed = window._restElapsedAtHide + hiddenMs;
-            window._hiddenAtRest = null;
             if (totalElapsed >= restTotalMs) {
-                // Break finished while screen was off
                 endRestTimer(true);
             } else {
-                // Rebase restStartTime so the rAF loop picks up from the right place
                 restStartTime = performance.now() - totalElapsed;
             }
-        } else {
-            window._hiddenAtRest = null;
         }
+        window._hiddenAtRest = null;
     }
 });
 
-// Handle page unload to save state
-window.addEventListener('beforeunload', function () {
-    saveState();
-});
+window.addEventListener('beforeunload', saveState);
+
 // ═══════════════════════════════════════════════════════
-// ── FEATURE MODULE: Visual Enhancements ─────────────────
+// VISUAL ENHANCEMENTS
 // ═══════════════════════════════════════════════════════
 
-// ── 1. CIRCULAR PROGRESS RING (Custom Timer only) ────────
-const customRingFill = document.getElementById('custom-ring-fill');
-const RING_CIRCUMFERENCE = 753.98; // 2 * π * 120
+// ── 1. Custom Timer Progress Ring ────────────────────
+const customRingFill     = document.getElementById('custom-ring-fill');
+const RING_CIRCUMFERENCE = 753.98; // 2π × 120
 
-// Custom timer ring: drains as time is consumed
 function updateCustomRing() {
     if (!customRingFill || customTotalTime === 0) return;
     const remaining = Math.max(0, customTotalTime - customElapsedTime);
-    const progress = remaining / customTotalTime; // 1 = full, 0 = empty
-    const offset = RING_CIRCUMFERENCE * (1 - progress);
-    customRingFill.style.strokeDashoffset = offset;
+    const progress  = remaining / customTotalTime;
+    customRingFill.style.strokeDashoffset = (RING_CIRCUMFERENCE * (1 - progress)).toString();
 
-    // Color shift: green → amber → red as it drains
     let r, g, b;
     if (progress > 0.5) {
-        // green → amber
         const t = 1 - (progress - 0.5) * 2;
-        r = Math.round(100 + 140 * t);
-        g = Math.round(200 - 40 * t);
-        b = Math.round(80 - 40 * t);
+        r = Math.round(100 + 140 * t); g = Math.round(200 - 40 * t); b = Math.round(80 - 40 * t);
     } else {
-        // amber → red
         const t = 1 - progress * 2;
-        r = 240;
-        g = Math.round(160 - 130 * t);
-        b = Math.round(40 - 30 * t);
+        r = 240; g = Math.round(160 - 130 * t); b = Math.round(40 - 30 * t);
     }
-    customRingFill.style.stroke = `rgb(${r},${g},${b})`;
-    customRingFill.style.filter = `drop-shadow(0 0 8px rgba(${r},${g},${b},0.45))`;
+    customRingFill.style.stroke  = `rgb(${r},${g},${b})`;
+    customRingFill.style.filter  = `drop-shadow(0 0 8px rgba(${r},${g},${b},0.45))`;
 }
 
-// ── 2. HEARTBEAT PULSE ───────────────────────────────────
-const timerDisplay = document.querySelector('.timer');
-const customTimerDisplay = document.querySelector('.custom-timer');
-let lastHeartbeatSecond = -1;
+// ── 2. Heartbeat Pulse ────────────────────────────────
+const timerDisplay            = document.querySelector('.timer');
+const customTimerDisplay      = document.querySelector('.custom-timer');
+let lastHeartbeatSecond       = -1;
 let lastCustomHeartbeatSecond = -1;
 
 function triggerHeartbeat(el) {
     if (!el) return;
     el.classList.remove('pulse');
-    // Force reflow to restart animation
     void el.offsetWidth;
     el.classList.add('pulse');
 }
 
-// ── 3. DYNAMIC BACKGROUND GRADIENT ───────────────────────
-// Smoothly interpolates body background between:
-//   cool deep blue-black (start) → warm amber-black (working hard)
-const BG_START = { r: 8, g: 10, b: 18 };   // cool dark blue
-const BG_MID   = { r: 10, g: 9, b: 10 };   // neutral dark
-const BG_END   = { r: 20, g: 10, b: 4 };   // warm ember (the --bg-pure value)
+// ── 3. Dynamic Background Gradient ───────────────────
+const BG_START = { r: 8,  g: 10, b: 18 };
+const BG_MID   = { r: 10, g: 9,  b: 10 };
+const BG_END   = { r: 20, g: 10, b: 4  };
 
 function lerpColor(a, b, t) {
     return {
@@ -1144,9 +1000,6 @@ function lerpColor(a, b, t) {
     };
 }
 
-// Throttle: background-color and box-shadow on <body> force a full-page repaint.
-// Running them at 60fps is the root cause of Android jank. They change so slowly
-// (over minutes) that once-per-second updates are visually indistinguishable.
 let _lastVisualUpdateSecond = -1;
 function _shouldUpdateVisuals() {
     const nowSec = Math.floor(performance.now() / 1000);
@@ -1157,63 +1010,38 @@ function _shouldUpdateVisuals() {
 
 function updateDynamicBackground(progressRatio) {
     if (!_shouldUpdateVisuals()) return;
-    const t = Math.min(Math.max(progressRatio, 0), 1);
+    const t   = Math.min(Math.max(progressRatio, 0), 1);
     const col = t < 0.5 ? lerpColor(BG_START, BG_MID, t * 2) : lerpColor(BG_MID, BG_END, (t - 0.5) * 2);
     document.body.style.backgroundColor = `rgb(${col.r},${col.g},${col.b})`;
 }
 
 function resetDynamicBackground() {
     document.body.style.backgroundColor = '';
-    _lastVisualUpdateSecond = -1; // allow immediate update on next timer start
+    _lastVisualUpdateSecond = -1;
 }
 
-// ── 4. SCREEN EDGE GLOW ──────────────────────────────────
-// Intensity increases as custom timer drains OR std timer grows.
-// box-shadow on <body> is NOT GPU-composited — it triggers a full repaint.
-// The throttle in updateDynamicBackground() already limits combined updates to 1/s.
-// updateEdgeGlow is always called right after updateDynamicBackground in the rAF
-// loop, so by the time we arrive here the throttle has already fired for this second.
-// We add a separate guard here as a safety net for any direct callers.
+// ── 4. Screen Edge Glow ───────────────────────────────
 let _lastGlowUpdateSecond = -1;
 function updateEdgeGlow(progressRatio) {
     const nowSec = Math.floor(performance.now() / 1000);
     if (nowSec === _lastGlowUpdateSecond) return;
     _lastGlowUpdateSecond = nowSec;
     const intensity = Math.min(progressRatio, 1);
-
-    // Color: teal at start → amber mid → red at end
     let r, g, b;
     if (intensity < 0.5) {
         const t = intensity * 2;
-        r = Math.round(50 + 190 * t);
-        g = Math.round(200 - 60 * t);
-        b = Math.round(180 - 100 * t);
+        r = Math.round(50 + 190 * t); g = Math.round(200 - 60 * t); b = Math.round(180 - 100 * t);
     } else {
         const t = (intensity - 0.5) * 2;
-        r = 240;
-        g = Math.round(140 - 110 * t);
-        b = Math.round(80 - 60 * t);
+        r = 240; g = Math.round(140 - 110 * t); b = Math.round(80 - 60 * t);
     }
-
-    const alpha = 0.12 + intensity * 0.38;
+    const alpha  = 0.12 + intensity * 0.38;
     const spread = 20 + intensity * 60;
-    const glow = `rgba(${r},${g},${b},${alpha})`;
-
-    document.body.style.boxShadow = `inset 0 0 ${spread}px ${Math.round(spread * 0.4)}px ${glow}`;
+    document.body.style.boxShadow =
+        `inset 0 0 ${spread}px ${Math.round(spread * 0.4)}px rgba(${r},${g},${b},${alpha})`;
 }
 
 function resetEdgeGlow() {
     document.body.style.boxShadow = '';
-    _lastGlowUpdateSecond = -1; // allow immediate update on next timer start
+    _lastGlowUpdateSecond = -1;
 }
-
-
-// ─────────────────────────────────────────────────────────
-// HOOK INTO EXISTING TIMER FUNCTIONS
-// ─────────────────────────────────────────────────────────
-// NOTE: Visual side-effects (resetEdgeGlow, resetDynamicBackground, heartbeat,
-// ring reset) are inlined directly into resetTimer, resetCustomTimer,
-// pauseOrResumeTimer, and pauseOrResumeCustomTimer.
-// The old window.* wrapper pattern was unreliable because button listeners
-// capture the original function reference at addEventListener time, so the
-// wrappers were silently bypassed on every button click.

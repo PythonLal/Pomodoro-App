@@ -579,18 +579,19 @@ h1 {
 .rest-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
-    background: rgba(8, 5, 2, 0.88);
+    background: rgba(8, 5, 2, 0.92);
     /* backdrop-filter omitted — causes blank overlay on many Android browsers */
     display: flex;
     justify-content: center;
     align-items: center;
-    z-index: 1500;
+    /* z-index 2100: must be above celebration (2000) so the rest modal is
+       never hidden behind a lingering celebration overlay on Android */
+    z-index: 2100;
     animation: fadeIn 0.35s ease both;
 }
 
 .rest-overlay.hidden {
     display: none;
-    visibility: hidden;
     pointer-events: none;
 }
 
@@ -780,7 +781,6 @@ h1 {
    drop the opening animation frame when toggling display on the same tick */
 .celebration.hidden {
     display: none;
-    visibility: hidden;
     pointer-events: none;
 }
 
