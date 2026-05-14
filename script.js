@@ -7,9 +7,8 @@ let pausedMilliseconds = 0;
 let isPaused = false;
 let completedSessions = 0;
 let sessionData = JSON.parse(localStorage.getItem("sessionData")) || [];
-// Guard flag: true after resetTimer() to swallow the Android ghost-click that
-// fires on the Start button after the celebration overlay disappears.
-let _blockStartUntilNextGesture = false;
+// Android ghost-click guard: set true by resetTimer(), consumed by startTimer()
+let _ignoreNextStart = false;
 
 // Global Variables for Custom Timer
 let customStartTime = null;
@@ -490,11 +489,9 @@ function handleKeyboardShortcuts(e) {
 
 // Standard Timer Functions
 function startTimer() {
-    // Swallow the Android ghost-click that arrives after stop → reset → celebration
-    if (_blockStartUntilNextGesture) {
-        _blockStartUntilNextGesture = false;
-        return;
-    }
+    // Consume ghost-click guard set by resetTimer() to absorb Android's synthetic
+    // click that fires after the celebration overlay disappears.
+    if (_ignoreNextStart) { _ignoreNextStart = false; return; }
     // Always a fresh start — resume is handled by pauseOrResumeTimer
     startTime = performance.now();
     elapsedMilliseconds = 0;
@@ -513,9 +510,9 @@ function startTimer() {
 const STD_RING_MAX_MS = 3600000; // 1 hour reference for background/glow
 
 function updateTimer() {
-    // Guard: if timer was cleared (stop/reset) or startTime was nulled, bail out.
-    // Checking startTime handles the Android case where a stale rAF callback fires
-    // in the same frame as cancelAnimationFrame (timer is already null here).
+    // Guard: bail if timer was cancelled, we're paused, or startTime was cleared by reset.
+    // The startTime === null check catches Android's case where a stale rAF callback
+    // fires in the same frame as cancelAnimationFrame (timer handle is already null).
     if (timer === null || isPaused || startTime === null) return;
     const currentTime = performance.now();
     elapsedMilliseconds = currentTime - startTime;
@@ -623,7 +620,7 @@ function resetTimer() {
     isPaused = false;
     cancelAnimationFrame(timer);
     timer = null;
-    startTime = null;          // FIX: null startTime so stale rAF frames can't drift
+    startTime = null;          // FIX: null so stale rAF frames can't miscalculate elapsed time
     clearInterval(pauseTimer);
     pauseButton.textContent = "Pause";
     startButton.disabled = false;
@@ -638,12 +635,11 @@ function resetTimer() {
     resetEdgeGlow();
     resetDynamicBackground();
     lastHeartbeatSecond = -1;
-    // Block ghost clicks on Android: after a stop, Android synthesizes a delayed
-    // click that can land on the Start button once the celebration overlay is gone.
-    // We use a flag checked inside startTimer() rather than a timed pointer-events
-    // patch, which could expire before the ghost click arrives (or freeze the button
-    // if the overlay swallows the real click first).
-    _blockStartUntilNextGesture = true;
+    // Block ghost clicks on Android: after stop, Android synthesizes 1-2 delayed
+    // click events that can land on the Start button once the celebration disappears.
+    // A time-based pointer-events patch is unreliable (can expire too early or too late).
+    // Instead we use a flag that startTimer() consumes on the first ghost invocation.
+    _ignoreNextStart = true;
     // Don't clear messageDiv here — the caller sets it right after
 }
 
@@ -930,6 +926,11 @@ function startRestTimer(restSeconds) {
 }
 
 // Celebration Animation
+// Named handler so it can be removed and never stacks across sessions
+function _dismissCelebration() {
+    celebration.classList.add('hidden');
+}
+
 function showCelebration() {
     celebration.classList.remove('hidden');
 
@@ -947,20 +948,16 @@ function showCelebration() {
     // Create confetti particles
     createConfetti();
 
-    // Auto-hide after 5 seconds
-    setTimeout(() => {
+    // Auto-hide after 5 seconds — remove listener so it doesn't stack
+    clearTimeout(showCelebration._autoHideTimer);
+    showCelebration._autoHideTimer = setTimeout(() => {
         celebration.classList.add('hidden');
+        celebration.removeEventListener('click', _dismissCelebration);
     }, 5000);
 
-    // Allow manual close by clicking.
-    // On Android, the tap that triggered Stop also synthesizes a click that
-    // hits this overlay. We swallow it here (once:true), then after the overlay
-    // hides a second ghost click can pass through to whatever is underneath
-    // (e.g. the re-enabled Start button). The resetTimer() call already sets
-    // pointer-events:none on the Start button for 600ms to absorb that.
-    celebration.addEventListener('click', () => {
-        celebration.classList.add('hidden');
-    }, { once: true });
+    // Allow manual close — remove any previous listener first to prevent stacking
+    celebration.removeEventListener('click', _dismissCelebration);
+    celebration.addEventListener('click', _dismissCelebration, { once: true });
 }
 
 function createConfetti() {
