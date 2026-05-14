@@ -628,6 +628,11 @@ function resetTimer() {
     resetEdgeGlow();
     resetDynamicBackground();
     lastHeartbeatSecond = -1;
+    // Block ghost clicks on Android: after a stop, Android synthesizes a delayed
+    // click that passes through the celebration overlay onto the Start button.
+    // Briefly disabling pointer-events absorbs it without affecting UX.
+    startButton.style.pointerEvents = 'none';
+    setTimeout(() => { startButton.style.pointerEvents = ''; }, 600);
     // Don't clear messageDiv here — the caller sets it right after
 }
 
@@ -936,7 +941,12 @@ function showCelebration() {
         celebration.classList.add('hidden');
     }, 5000);
 
-    // Allow manual close by clicking
+    // Allow manual close by clicking.
+    // On Android, the tap that triggered Stop also synthesizes a click that
+    // hits this overlay. We swallow it here (once:true), then after the overlay
+    // hides a second ghost click can pass through to whatever is underneath
+    // (e.g. the re-enabled Start button). The resetTimer() call already sets
+    // pointer-events:none on the Start button for 600ms to absorb that.
     celebration.addEventListener('click', () => {
         celebration.classList.add('hidden');
     }, { once: true });
