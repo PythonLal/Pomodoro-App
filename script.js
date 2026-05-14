@@ -38,7 +38,55 @@ const customMessageDiv = document.getElementById("custom-message");
 const presetButtons = document.querySelectorAll(".preset-btn");
 
 // DOM Elements - Common
-const alarmSound = document.getElementById("alarm-sound");
+// NOTE: There is no #alarm-sound element in the HTML (only #alarm-sound-high).
+// We synthesize the "low" alarm with the Web Audio API so the Low option actually works.
+const alarmSound = null; // kept for reference; real low alarm is _playLowAlarm()
+let _lowAlarmAudioCtx = null;
+function _playLowAlarm(volume) {
+    try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return;
+        if (!_lowAlarmAudioCtx || _lowAlarmAudioCtx.state === 'closed') {
+            _lowAlarmAudioCtx = new AudioContext();
+        }
+        // Resume in case it was suspended (Android requires gesture unlock)
+        const ctx = _lowAlarmAudioCtx;
+        const play = () => {
+            const tones = [440, 392, 349]; // A4 → G4 → F4 descending soft chime
+            tones.forEach((freq, i) => {
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine';
+                osc.frequency.value = freq;
+                const startAt = ctx.currentTime + i * 0.25;
+                gain.gain.setValueAtTime(0, startAt);
+                gain.gain.linearRampToValueAtTime(volume * 0.7, startAt + 0.05);
+                gain.gain.exponentialRampToValueAtTime(0.0001, startAt + 0.5);
+                osc.start(startAt);
+                osc.stop(startAt + 0.55);
+            });
+        };
+        if (ctx.state === 'suspended') {
+            ctx.resume().then(play).catch(() => {});
+        } else {
+            play();
+        }
+    } catch (e) { console.log('Low alarm synthesis failed:', e); }
+}
+// Wrapper that mimics the HTMLAudioElement .play() interface used at call sites
+const _lowAlarmProxy = {
+    get volume() { return this._vol !== undefined ? this._vol : 0.5; },
+    set volume(v) { this._vol = v; },
+    play() {
+        _playLowAlarm(this._vol !== undefined ? this._vol : 0.5);
+        return Promise.resolve();
+    },
+    pause() {},
+    _vol: 0.5
+};
+
 const fullscreenToggle = document.getElementById("fullscreen-toggle");
 const tabButtons = document.querySelectorAll(".tab-button");
 const tabContents = document.querySelectorAll(".tab-content");
@@ -90,11 +138,13 @@ function setupAndroidAudioUnlock() {
             }
         } catch(e) {}
         // Also attempt to load and briefly play/pause HTML audio elements
-        [alarmSoundHigh, alarmSound].forEach(el => {
+        [alarmSoundHigh].forEach(el => {
             if (!el) return;
             el.volume = 0;
             el.play().then(() => { el.pause(); el.currentTime = 0; el.volume = 0.5; }).catch(() => {});
         });
+        // Pre-warm the Web Audio context used by the low alarm
+        _playLowAlarm(0);
         document.removeEventListener('touchstart', unlockAudio, true);
         document.removeEventListener('touchend', unlockAudio, true);
         document.removeEventListener('click', unlockAudio, true);
@@ -297,8 +347,8 @@ function updateCustomTimerControlsState() {
 
 // Apply volume to both alarm sounds
 function applyVolume(volume) {
-    if (alarmSound) alarmSound.volume = volume;
     if (alarmSoundHigh) alarmSoundHigh.volume = volume;
+    _lowAlarmProxy.volume = volume;
     // Update slider track fill
     alarmVolumeSlider.style.setProperty('--volume-pct', (volume * 100) + '%');
     // Update icon based on level
@@ -453,6 +503,8 @@ function startTimer() {
 }
 
 function updateTimer() {
+    // Guard: if timer was cleared (stop/reset), do not reschedule
+    if (!timer && !isPaused) return;
     if (isPaused) return;
     const currentTime = performance.now();
     elapsedMilliseconds = currentTime - startTime;
@@ -475,7 +527,7 @@ function pauseOrResumeTimer() {
     } else {
         isPaused = true;
         cancelAnimationFrame(timer);
-        timer = null;
+        timer = null;          // null here so updateTimer guard prevents ghost rAF
         pauseButton.textContent = "Resume";
         startPauseTimer();
         updateTabStates();
@@ -484,10 +536,24 @@ function pauseOrResumeTimer() {
 }
 
 function stopTimer() {
+    // Cancel the animation loop and null out the handle FIRST,
+    // so the updateTimer guard above prevents any stale rAF frame
+    // from re-spawning the loop after we call resetTimer().
     cancelAnimationFrame(timer);
+    timer = null;
     clearInterval(pauseTimer);
+    isPaused = false;
+
     const workSeconds = Math.floor(elapsedMilliseconds / 1000);
     const workMinutes = Math.floor(workSeconds / 60);
+
+    // If stopped immediately with no meaningful time elapsed, just reset quietly
+    if (workSeconds < 1) {
+        resetTimer();
+        messageDiv.textContent = "";
+        return;
+    }
+
     const restNeeded = calculateRestTime(workSeconds);
 
     completedSessions++;
@@ -498,12 +564,11 @@ function stopTimer() {
     showNotification("Pomodoro Complete!", `Great job! You worked for ${workMinutes} minutes.`);
 
     // Play appropriate alarm sound for standard timer
-    const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : alarmSound;
+    const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : _lowAlarmProxy;
     if (selectedAlarm) {
         selectedAlarm.play().catch(e => console.log('Could not play alarm sound'));
     }
 
-    timer = null;
     resetTimer();
 
     if (restNeeded > 0) {
@@ -610,6 +675,8 @@ function startCustomTimer() {
 }
 
 function updateCustomTimer() {
+    // Guard: if customTimer was cleared (reset/complete), do not reschedule
+    if (customTimer === null && !customIsPaused) return;
     if (!customIsPaused && customIsRunning) {
         const currentTime = performance.now();
         customElapsedTime = currentTime - customStartTime;
@@ -639,6 +706,7 @@ function pauseOrResumeCustomTimer() {
     } else {
         customIsPaused = true;
         cancelAnimationFrame(customTimer);
+        customTimer = null;   // null so updateCustomTimer guard prevents ghost rAF
         customPauseButton.textContent = "Resume";
         customMessageDiv.textContent = "Custom timer paused...";
         updateTabStates();
@@ -656,7 +724,7 @@ function completeCustomTimer() {
     // Play alarm sound using custom tab's alarm settings
     const customVolume = customAlarmVolumeSlider ? parseFloat(customAlarmVolumeSlider.value) : 0.5;
     const useHighAlarm = customAlarmTypeSelect && customAlarmTypeSelect.value === 'high';
-    const selectedAlarm = useHighAlarm ? alarmSoundHigh : alarmSound;
+    const selectedAlarm = useHighAlarm ? alarmSoundHigh : _lowAlarmProxy;
     if (selectedAlarm) {
         selectedAlarm.volume = customVolume;
         selectedAlarm.play().catch(e => console.log('Could not play alarm sound'));
@@ -669,11 +737,13 @@ function completeCustomTimer() {
 }
 
 function resetCustomTimer() {
+    // Cancel and null FIRST so the updateCustomTimer guard prevents ghost rAF frames
     cancelAnimationFrame(customTimer);
     customTimer = null;
-    customElapsedTime = 0;
-    customIsPaused = false;
     customIsRunning = false;
+    customIsPaused = false;
+    customElapsedTime = 0;
+    clearInterval(pauseTimer); // in case pause interval was running
     customStartButton.disabled = false;
     customPauseButton.disabled = true;
     customPauseButton.textContent = "Pause";
@@ -739,6 +809,7 @@ function showRestModal(restSeconds, workMinutes) {
 }
 
 function tickRestTimer(now) {
+    if (restTotalMs <= 0) { endRestTimer(true); return; } // safety guard
     const elapsed = now - restStartTime;
     const remaining = Math.max(0, restTotalMs - elapsed);
     const progress = remaining / restTotalMs; // 1 = full ring, 0 = empty
@@ -770,7 +841,7 @@ function endRestTimer(completed) {
     restOverlay.classList.add('hidden');
 
     if (completed) {
-        const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : alarmSound;
+        const selectedAlarm = alarmTypeSelect.value === 'high' ? alarmSoundHigh : _lowAlarmProxy;
         if (selectedAlarm) selectedAlarm.play().catch(() => {});
         showNotification("Break Over!", "Time to get back to focus.");
         messageDiv.textContent = "Break complete — let's get back to it! 💪";
@@ -865,25 +936,34 @@ function saveState(reset = false) {
 document.addEventListener('visibilitychange', function () {
     if (document.hidden) {
         // Page is hidden — record the wall-clock time so we can catch up
-        if (timer && startTime) {
+        if (timer && startTime && !isPaused) {
             // Store the timestamp so we can calculate drift when we return
             window._hiddenAtStd = Date.now();
             window._elapsedAtHide = elapsedMilliseconds;
         }
-        if (customTimer && customStartTime) {
+        if (customTimer && customStartTime && !customIsPaused) {
             window._hiddenAtCustom = Date.now();
             window._customElapsedAtHide = customElapsedTime;
         }
+        // Rest timer: record wall-clock time so break countdown stays accurate
+        if (restRaf !== null && restStartTime !== null) {
+            window._hiddenAtRest = Date.now();
+            window._restElapsedAtHide = performance.now() - restStartTime;
+        }
     } else {
         // Page is visible — recalculate to account for time that passed while hidden
-        if (timer && startTime && window._hiddenAtStd != null) {
+        // Only sync if the timer is genuinely still running (timer handle is non-null
+        // and we are not paused) to avoid resurrecting a stopped/reset timer.
+        if (timer !== null && !isPaused && startTime && window._hiddenAtStd != null) {
             const hiddenMs = Date.now() - window._hiddenAtStd;
             elapsedMilliseconds = window._elapsedAtHide + hiddenMs;
             startTime = performance.now() - elapsedMilliseconds;
             window._hiddenAtStd = null;
             updateTimerDisplay();
+        } else {
+            window._hiddenAtStd = null;
         }
-        if (customIsRunning && !customIsPaused && window._hiddenAtCustom != null) {
+        if (customIsRunning && !customIsPaused && customTimer !== null && window._hiddenAtCustom != null) {
             const hiddenMs = Date.now() - window._hiddenAtCustom;
             customElapsedTime = window._customElapsedAtHide + hiddenMs;
             customStartTime = performance.now() - customElapsedTime;
@@ -895,6 +975,23 @@ document.addEventListener('visibilitychange', function () {
             } else {
                 updateCustomTimerDisplay();
             }
+        } else {
+            window._hiddenAtCustom = null;
+        }
+        // Rest timer: re-sync elapsed time after coming back from background
+        if (restRaf !== null && restStartTime !== null && window._hiddenAtRest != null) {
+            const hiddenMs = Date.now() - window._hiddenAtRest;
+            const totalElapsed = window._restElapsedAtHide + hiddenMs;
+            window._hiddenAtRest = null;
+            if (totalElapsed >= restTotalMs) {
+                // Break finished while screen was off
+                endRestTimer(true);
+            } else {
+                // Rebase restStartTime so the rAF loop picks up from the right place
+                restStartTime = performance.now() - totalElapsed;
+            }
+        } else {
+            window._hiddenAtRest = null;
         }
     }
 });
